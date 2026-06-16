@@ -1,0 +1,29 @@
+[project]
+name = "omni-gs-playground"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "mjlab==1.4.0",
+    "rsl-rl-lib==5.2.0",
+]
+
+[project.scripts]
+omni-gs-playground = "omni_gs_playground:main"
+
+[tool.uv.sources]
+rsl-rl-lib = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+    "packages/rsl_rl",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

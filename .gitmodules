@@ -1,0 +1,3 @@
+[submodule "packages/rsl_rl"]
+	path = packages/rsl_rl
+	url = git@github.com:HITCSC/rsl_rl.git
