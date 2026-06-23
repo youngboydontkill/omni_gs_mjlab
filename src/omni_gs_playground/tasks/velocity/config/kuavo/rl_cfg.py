@@ -91,9 +91,72 @@ def kuavo_s54_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
 
 
 def kuavo_s45_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-  """Create RL runner configuration for Kuavo S45 velocity task."""
+  """Create the CNN RL runner configuration for the Kuavo S45 rough task.
+
+  Mirrors :func:`kuavo_s54_head_cnn_ppo_runner_cfg`: actor and critic both use
+  ``CNNModel`` with two conv layers consuming the normalized depth image as a
+  separate 2D observation group (``actor_depth`` / ``critic_depth``).
+  Encoder weights are NOT shared between actor and critic so the value head
+  can specialise on its full privileged input set.
+  """
+  cnn_cfg = {
+    "output_channels": (16, 32),
+    "kernel_size": (5, 3),
+    "stride": (2, 2),
+    "padding": "zeros",
+    "global_pool": "avg",
+  }
   cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.actor.class_name = "CNNModel"
+  cfg.actor.cnn_cfg = cnn_cfg
+  cfg.critic.class_name = "CNNModel"
+  cfg.critic.cnn_cfg = cnn_cfg
+  cfg.algorithm.share_cnn_encoders = False
+  cfg.obs_groups = {
+    "actor": ("actor", "actor_depth"),
+    "critic": ("critic", "critic_depth"),
+  }
   cfg.experiment_name = "kuavo_s45_velocity"
+  return cfg
+
+
+def kuavo_s45_defm_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the DeFM runner configuration for the 23-joint S45 rough task.
+
+  Mirrors :func:`kuavo_s54_ppo_runner_cfg`: actor/critic both use the frozen
+  ``defm_vit_s14`` encoder with 42x42 depth + the project's 384->32 channel
+  averaging, encoders are shared between actor and critic, and the PPO
+  algorithm enables feature caching during rollout.
+  """
+  defm_cfg = {
+    "model_name": "defm_vit_s14",
+    "pretrained": True,
+    "trainable": False,
+    "target_size": 42,
+    "token_feature_dim": 32,
+  }
+  cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.actor = RslRlDefmModelCfg(
+    class_name="DefmModel",
+    hidden_dims=cfg.actor.hidden_dims,
+    activation=cfg.actor.activation,
+    obs_normalization=cfg.actor.obs_normalization,
+    distribution_cfg=cfg.actor.distribution_cfg,
+    defm_cfg=defm_cfg,
+  )
+  cfg.critic = RslRlDefmModelCfg(
+    class_name="DefmModel",
+    hidden_dims=cfg.critic.hidden_dims,
+    activation=cfg.critic.activation,
+    obs_normalization=cfg.critic.obs_normalization,
+    defm_cfg=defm_cfg,
+  )
+  cfg.algorithm.share_cnn_encoders = True
+  cfg.obs_groups = {
+    "actor": ("actor", "actor_depth"),
+    "critic": ("critic", "critic_depth"),
+  }
+  cfg.experiment_name = "kuavo_s45_defm_velocity"
   return cfg
 
 

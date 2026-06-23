@@ -1,5 +1,6 @@
 """Kuavo velocity environment configurations."""
 
+import math
 from copy import deepcopy
 
 from omni_gs_playground.assets.robots.kuavo import (
@@ -210,8 +211,19 @@ def _kuavo_rough_env_cfg(
 
 
 def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """Create Kuavo S45 rough terrain velocity configuration."""
-  return _kuavo_rough_env_cfg(
+  """Create Kuavo S45 rough terrain velocity configuration.
+
+  Reward set is ported from Leju-IsaacLab ``emp_env_cfg.py``: starts from the
+  shared Kuavo rough config and then overrides weights / drops a few default
+  terms / injects EMP-specific terms. Only this task is affected; the S54
+  variants reuse ``_kuavo_rough_env_cfg`` unchanged.
+
+  The depth camera observation is hoisted into independent
+  ``actor_depth`` / ``critic_depth`` groups (normalized to [-1, 1]) so the
+  CNN encoder configured in :func:`kuavo_s45_ppo_runner_cfg` consumes it as
+  a 2D input. This matches the layout used by ``Kuavo-S54-Head-CNN-Rough``.
+  """
+  cfg = _kuavo_rough_env_cfg(
     robot_cfg=get_kuavo_s45_robot_cfg(),
     action_scale=KUAVO_S45_ACTION_SCALE,
     controlled_joints=S45_CONTROLLED_JOINTS,
@@ -221,6 +233,225 @@ def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     depth_camera_pos=(0.0787, 0.0, 0.082951),
     play=play,
   )
+  _apply_s45_emp_rewards(cfg)
+  _separate_depth_observations(cfg, normalize=True)
+  return cfg
+
+
+# ---------------------------------------------------------------------------
+# S45 EMP-style reward port (Leju-IsaacLab emp_env_cfg.py).
+# ---------------------------------------------------------------------------
+
+_S45_FEET_GROUND_SENSOR = "feet_ground_contact"
+_S45_UNDESIRED_CONTACT_SENSOR = "undesired_body_contact"
+_S45_FEET_NAMES: tuple[str, ...] = FOOT_BODIES
+_S45_ANKLE_JOINTS: tuple[str, ...] = (
+  "leg_l5_joint",
+  "leg_l6_joint",
+  "leg_r5_joint",
+  "leg_r6_joint",
+)
+
+
+def _scene_cfg(**kwargs) -> SceneEntityCfg:
+  return SceneEntityCfg("robot", **kwargs)
+
+
+def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+  """In-place: rewrite ``cfg.rewards`` to match Leju-IsaacLab S42 EMP setup."""
+
+  # 1) New sensor: any contact between non-foot bodies and the world.
+  undesired_body_contact_cfg = ContactSensorCfg(
+    name=_S45_UNDESIRED_CONTACT_SENSOR,
+    primary=ContactMatch(
+      mode="body",
+      pattern=(r"leg_[lr][1-5]_link", "base_link", r"zarm_[lr][1-7]_link"),
+      entity="robot",
+    ),
+    secondary=None,
+    fields=("found", "force"),
+    reduce="netforce",
+    num_slots=1,
+    history_length=4,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (undesired_body_contact_cfg,)
+
+  # Verify air-time tracking is on for the feet sensor.
+  feet_ground = next(
+    s for s in cfg.scene.sensors or () if s.name == _S45_FEET_GROUND_SENSOR
+  )
+  assert feet_ground.track_air_time, (
+    "feet_ground_contact must have track_air_time=True for "
+    "feet_air_time_positive_biped"
+  )
+
+  # 2) Drop terms the source replaces / does not use.
+  for key in ("foot_clearance", "foot_slip", "soft_landing"):
+    cfg.rewards.pop(key, None)
+
+  # 3) Re-weight surviving terms.
+  cfg.rewards["track_linear_velocity"].weight = 5.0
+  cfg.rewards["track_angular_velocity"].weight = 3.0
+  cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.25)
+  cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.25)
+  cfg.rewards["action_rate_l2"].weight = -0.005
+  cfg.rewards["body_orientation_l2"].weight = -3.0
+  # body_ang_vel (-0.05), joint_acc_l2 (-2.5e-7), joint_pos_limits (-10.0),
+  # is_terminated (-200.0), stand_still (-1.0), self_collisions (-1.0) are
+  # kept as-is (already match source intent).
+
+  # 4) Inject EMP-specific terms.
+  non_ankle_torque_joints = (r"leg_[lr][1-5]_joint", r"zarm_[lr][1-7]_joint")
+  ankle_torque_joints = (r"leg_[lr]6_joint",)
+  hip_joints = (r"leg_[lr][12]_joint",)
+  arm_joints = (r"zarm_[lr][1-7]_joint",)
+  all_controlled = _controlled_joints_cfg(S45_CONTROLLED_JOINTS)
+
+  cfg.rewards.update({
+    "dof_vel_l2": RewardTermCfg(
+      func=mdp.joint_vel_l2,
+      weight=-2.0e-3,
+      params={"asset_cfg": all_controlled},
+    ),
+    "dof_torques_l2": RewardTermCfg(
+      func=mdp.joint_torques_l2,
+      weight=-1.0e-5,
+      params={
+        "asset_cfg": _scene_cfg(actuator_names=non_ankle_torque_joints),
+      },
+    ),
+    "dof_torques_ankle_l2": RewardTermCfg(
+      func=mdp.joint_torques_l2,
+      weight=-1.0e-5,
+      params={
+        "asset_cfg": _scene_cfg(actuator_names=ankle_torque_joints),
+      },
+    ),
+    "dof_power_l2": RewardTermCfg(
+      func=mdp.joint_power_l2,
+      weight=-2.0e-5,
+      params={
+        "asset_cfg": _scene_cfg(
+          joint_names=S45_CONTROLLED_JOINTS,
+          actuator_names=S45_CONTROLLED_JOINTS,
+          preserve_order=True,
+        ),
+      },
+    ),
+    "action_smoothness_l2": RewardTermCfg(
+      func=mdp.action_acc_l2,
+      weight=-0.01,
+    ),
+    "feet_air_time": RewardTermCfg(
+      func=mdp.feet_air_time_positive_biped,
+      weight=2.0,
+      params={
+        "command_name": "twist",
+        "threshold": 0.5,
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "command_threshold": 0.01,
+        "asset_cfg": _scene_cfg(),
+      },
+    ),
+    "feet_slide": RewardTermCfg(
+      func=mdp.feet_slide,
+      weight=-0.1,
+      params={
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "asset_cfg": _scene_cfg(body_names=_S45_FEET_NAMES),
+      },
+    ),
+    "feet_contact_without_cmd": RewardTermCfg(
+      func=mdp.feet_contact_without_cmd,
+      weight=0.4,
+      params={
+        "command_name": "twist",
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "command_threshold": 0.01,
+        "asset_cfg": _scene_cfg(),
+      },
+    ),
+    "track_default_arm_pos": RewardTermCfg(
+      func=mdp.track_default_arm_pos,
+      weight=3.0,
+      params={
+        "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
+        "alpha": 5.0,
+      },
+    ),
+    "joint_deviation_hip": RewardTermCfg(
+      func=mdp.joint_deviation_l1,
+      weight=-0.1,
+      params={
+        "asset_cfg": _scene_cfg(joint_names=hip_joints, preserve_order=True),
+      },
+    ),
+    "joint_deviation_arms": RewardTermCfg(
+      func=mdp.joint_deviation_l1,
+      weight=-0.1,
+      params={
+        "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
+      },
+    ),
+    "contact_force": RewardTermCfg(
+      func=mdp.contact_force_violation,
+      weight=-0.001,
+      params={
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "threshold": 900.0,
+        "violation_max": 300.0,
+      },
+    ),
+    "feet_stumble": RewardTermCfg(
+      func=mdp.feet_stumble,
+      weight=-1.0,
+      params={"sensor_name": _S45_FEET_GROUND_SENSOR},
+    ),
+    "no_feet_contact": RewardTermCfg(
+      func=mdp.no_feet_contact,
+      weight=-0.1,
+      params={
+        "command_name": "twist",
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "command_threshold": 0.2,
+        "force_threshold": 5.0,
+      },
+    ),
+    "illegal_dof_barrier": RewardTermCfg(
+      func=mdp.illegal_dof_pos_barrier,
+      weight=-0.1,
+      params={
+        "asset_cfg": _scene_cfg(
+          joint_names=_S45_ANKLE_JOINTS, preserve_order=True
+        ),
+      },
+    ),
+    "feet_too_near": RewardTermCfg(
+      func=mdp.feet_too_near_humanoid,
+      weight=-5.0,
+      params={
+        "asset_cfg": _scene_cfg(),
+        "threshold": 0.15,
+        "feet_names": _S45_FEET_NAMES,
+      },
+    ),
+    "fly": RewardTermCfg(
+      func=mdp.fly,
+      weight=-10.0,
+      params={
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "threshold": 1.0,
+      },
+    ),
+    "undesired_contacts": RewardTermCfg(
+      func=mdp.undesired_contacts,
+      weight=-1.0,
+      params={
+        "sensor_name": _S45_UNDESIRED_CONTACT_SENSOR,
+        "threshold": 1.0,
+      },
+    ),
+  })
 
 
 def _kuavo_s54_base_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
@@ -269,6 +500,36 @@ def _separate_depth_observations(
 def kuavo_s54_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the 27-joint S54 rough terrain task with waist-mounted DeFM depth."""
   cfg = _kuavo_s54_base_rough_env_cfg(play=play)
+  depth_camera = next(
+    sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
+  )
+  depth_camera.width = 42
+  depth_camera.height = 42
+  _separate_depth_observations(cfg, normalize=False)
+  return cfg
+
+
+def kuavo_s45_rough_defm_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """S45 rough task with DeFM-aligned 42x42 depth and split depth obs groups.
+
+  Mirrors the S54 DeFM setup: starts from the shared Kuavo rough config,
+  applies the EMP-style reward port, resizes the depth camera to 42x42
+  (so DeFM ViT-S14 patches align), and hoists the depth obs into independent
+  ``actor_depth`` / ``critic_depth`` groups with raw metric depth (the DeFM
+  encoder expects un-normalized depth, unlike the CNN encoder in
+  :func:`kuavo_s45_rough_env_cfg`).
+  """
+  cfg = _kuavo_rough_env_cfg(
+    robot_cfg=get_kuavo_s45_robot_cfg(),
+    action_scale=KUAVO_S45_ACTION_SCALE,
+    controlled_joints=S45_CONTROLLED_JOINTS,
+    viewer_body=ROOT_BODY,
+    has_waist=False,
+    depth_camera_parent_body="robot/base_link",
+    depth_camera_pos=(0.0787, 0.0, 0.082951),
+    play=play,
+  )
+  _apply_s45_emp_rewards(cfg)
   depth_camera = next(
     sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
   )

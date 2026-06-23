@@ -40,6 +40,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
   num_cols=10,
   difficulty_range=(0.0, 1.0),
   sub_terrains={
+    "flat": terrain_gen.BoxFlatTerrainCfg(proportion=0.4),
     "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
       proportion=0.1,
       step_height_range=(0.02, 0.14),
@@ -54,15 +55,8 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       platform_width=2.0,
       border_width=0.8,
     ),
-    "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-      proportion=0.1,
-      slope_range=(0.0, 0.5),
-      platform_width=2.0,
-      border_width=0.25,
-      inverted=True,
-    ),
     "tilted_grid": terrain_gen.BoxTiltedGridTerrainCfg(
-      proportion=0.1,
+      proportion=0.05,
       grid_width=0.75,
       tilt_range_deg=24.0,
       height_range=0.35,
@@ -71,7 +65,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "box_random_grid": terrain_gen.BoxRandomGridTerrainCfg(
-      proportion=0.10,
+      proportion=0.05,
       grid_width=0.45,
       grid_height_range=(0.02, 0.45),
       platform_width=1.2,
@@ -79,7 +73,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       merge_similar_heights=True,
     ),
     "nested_rings": terrain_gen.BoxNestedRingsTerrainCfg(
-      proportion=0.10,
+      proportion=0.05,
       num_rings=8,
       ring_width_range=(0.25, 0.55),
       gap_range=(0.1, 0.45),
@@ -89,7 +83,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "narrow_beams": terrain_gen.BoxNarrowBeamsTerrainCfg(
-      proportion=0.10,
+      proportion=0.05,
       num_beams=12,
       beam_width_range=(0.18, 0.45),
       beam_height=0.25,
@@ -99,7 +93,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "stepping_stones": terrain_gen.BoxSteppingStonesTerrainCfg(
-      proportion=0.10,
+      proportion=0.05,
       stone_size_range=(0.35, 0.75),
       stone_distance_range=(0.15, 0.45),
       stone_height=0.25,
@@ -111,7 +105,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "random_spread_boxes": terrain_gen.BoxRandomSpreadTerrainCfg(
-      proportion=0.20,
+      proportion=0.15,
       num_boxes=60,
       box_width_range=(0.2, 1.2),
       box_length_range=(0.2, 1.2),

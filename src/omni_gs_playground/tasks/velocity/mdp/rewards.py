@@ -426,3 +426,282 @@ def stand_still(
             reward *= scale
     return reward
 
+
+# ---------------------------------------------------------------------------
+# Rewards ported from Leju-IsaacLab emp_env_cfg.py
+# (covers ~14 new terms for Kuavo S45 EMP-style training).
+# ---------------------------------------------------------------------------
+
+
+def _command_speed_norm(
+  env: ManagerBasedRlEnv, command_name: str
+) -> torch.Tensor:
+  """L2 norm of the linear (xy) + |yaw| command magnitude."""
+  command = env.command_manager.get_command(command_name)
+  assert command is not None, f"Command '{command_name}' not found."
+  return torch.norm(command[:, :3], dim=1)
+
+
+def _upright_gate(env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+  """clamp(-grav_z, 0, 0.7) / 0.7 — zeroes rewards while falling."""
+  asset: Entity = env.scene[asset_cfg.name]
+  grav_z = asset.data.projected_gravity_b[:, 2]
+  return torch.clamp(-grav_z, min=0.0, max=0.7) / 0.7
+
+
+def feet_air_time_positive_biped(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  threshold: float,
+  sensor_name: str,
+  command_threshold: float = 0.01,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward biped single-stance air time up to threshold.
+
+  Mirrors Leju-IsaacLab's feet_air_time_positive_biped: keeps one foot in
+  the air at a time, rewards the swing duration up to a cap, gates by the
+  command magnitude, and damps the reward while the robot is tipping.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  air_time = sensor.data.current_air_time
+  contact_time = sensor.data.current_contact_time
+  assert air_time is not None and contact_time is not None, (
+    f"Sensor '{sensor_name}' must have track_air_time=True."
+  )
+  in_contact = contact_time > 0.0
+  in_mode_time = torch.where(in_contact, contact_time, air_time)
+  single_stance = torch.sum(in_contact.int(), dim=1) == 1
+  reward = torch.min(
+    torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1
+  )[0]
+  reward = torch.clamp(reward, max=threshold)
+  cmd_norm = _command_speed_norm(env, command_name)
+  reward = reward * (cmd_norm > command_threshold).float()
+  reward = reward * _upright_gate(env, asset_cfg)
+  return reward
+
+
+def feet_slide(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize foot body XY velocity while in contact (force-gated >1N)."""
+  asset: Entity = env.scene[asset_cfg.name]
+  sensor: ContactSensor = env.scene[sensor_name]
+  if sensor.data.force_history is not None:
+    force_mag = torch.norm(sensor.data.force_history, dim=-1)
+    in_contact = (force_mag > 1.0).any(dim=-1)
+  else:
+    assert sensor.data.force is not None
+    in_contact = torch.norm(sensor.data.force, dim=-1) > 1.0
+  body_vel_xy = asset.data.body_link_lin_vel_w[:, asset_cfg.body_ids, :2]
+  vel_norm = torch.norm(body_vel_xy, dim=-1)
+  num = min(vel_norm.shape[1], in_contact.shape[1])
+  return torch.sum(vel_norm[:, :num] * in_contact[:, :num].float(), dim=1)
+
+
+def feet_contact_without_cmd(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  command_threshold: float = 0.01,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward first ground contact while command ~zero (stand-still anchor)."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  first_contact = sensor.compute_first_contact(env.step_dt).float()
+  reward = torch.sum(first_contact, dim=-1)
+  cmd_norm = _command_speed_norm(env, command_name)
+  reward = reward * (cmd_norm < command_threshold).float()
+  reward = reward * _upright_gate(env, asset_cfg)
+  return reward
+
+
+def track_default_arm_pos(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  alpha: float = 5.0,
+) -> torch.Tensor:
+  """Exp reward exp(-alpha * sum((q - q_default)^2)) on selected joints."""
+  asset: Entity = env.scene[asset_cfg.name]
+  q = asset.data.joint_pos[:, asset_cfg.joint_ids]
+  q_default = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  sq_dist = torch.sum(torch.square(q - q_default), dim=1)
+  return torch.exp(-alpha * sq_dist)
+
+
+def contact_force_violation(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  threshold: float,
+  violation_max: float = float("inf"),
+) -> torch.Tensor:
+  """Penalize contact force exceeding threshold (clipped at violation_max)."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  if sensor.data.force_history is not None:
+    force_mag = torch.norm(sensor.data.force_history, dim=-1).max(dim=-1)[0]
+  else:
+    assert sensor.data.force is not None
+    force_mag = torch.norm(sensor.data.force, dim=-1)
+  violation = (force_mag - threshold).clamp(min=0.0, max=violation_max)
+  return torch.sum(violation, dim=1)
+
+
+def feet_stumble(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+) -> torch.Tensor:
+  """Penalise contacts where lateral force >> vertical force (stumble)."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.force is not None
+  lateral = torch.norm(sensor.data.force[..., :2], dim=-1)
+  vertical = torch.abs(sensor.data.force[..., 2])
+  return torch.any(lateral > 3.0 * vertical, dim=1).float()
+
+
+def no_feet_contact(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  sensor_name: str,
+  command_threshold: float = 0.2,
+  force_threshold: float = 5.0,
+) -> torch.Tensor:
+  """Penalise no-foot-contact while command is small (lagging response)."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  if sensor.data.force_history is not None:
+    force_mag = torch.norm(sensor.data.force_history, dim=-1).max(dim=-1)[0]
+  else:
+    assert sensor.data.force is not None
+    force_mag = torch.norm(sensor.data.force, dim=-1)
+  in_contact = force_mag > force_threshold
+  no_contact = torch.sum(in_contact.int(), dim=1) == 0
+  cmd_norm = _command_speed_norm(env, command_name)
+  return torch.where(no_contact & (cmd_norm < command_threshold), 1.0, 0.0)
+
+
+# Convex feasible region for the (leg_l5, leg_l6, leg_r5, leg_r6) parallel
+# ankle subsystem. Copied verbatim from Leju-IsaacLab. Stored as plain tuples
+# so the tensor is built lazily on the correct device.
+_ANKLE_FEASIBLE_REGION = (
+  (0.87, 0.5, -0.40),
+  (-1.0, 0.0, -0.87),
+  (-0.63, -0.78, -0.94),
+  (0.87, -0.5, -0.4),
+  (0.0, -1.0, -0.8),
+  (-0.63, 0.78, -0.94),
+  (0.0, 1.0, -0.8),
+)
+
+
+def illegal_dof_pos_barrier(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Log-barrier penalty for the ankle parallel-mechanism feasible region.
+
+  Expects asset_cfg.joint_ids to resolve to exactly 4 joints in this order:
+  leg_l5_joint, leg_l6_joint, leg_r5_joint, leg_r6_joint.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  ankle = asset.data.joint_pos[:, asset_cfg.joint_ids]  # [B, 4]
+  feasible = torch.tensor(
+    _ANKLE_FEASIBLE_REGION, device=ankle.device, dtype=ankle.dtype
+  )  # [7, 3]
+  eps = 0.05
+  left = -feasible[:, -1] - torch.matmul(ankle[:, :2], feasible[:, :-1].T)
+  right = -feasible[:, -1] - torch.matmul(ankle[:, 2:], feasible[:, :-1].T)
+  left = torch.where((left < -eps).any(dim=-1, keepdim=True), 0.0, left)
+  right = torch.where((right < -eps).any(dim=-1, keepdim=True), 0.0, right)
+  max_penalty = 25.0
+  l = torch.clamp(-torch.log(left + eps), min=0.0, max=max_penalty)
+  r = torch.clamp(-torch.log(right + eps), min=0.0, max=max_penalty)
+  return (l + r).sum(dim=1)
+
+
+def feet_too_near_humanoid(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg,
+  threshold: float,
+  feet_names: tuple[str, ...],
+) -> torch.Tensor:
+  """Penalize feet drifting too close in the lateral (body Y) direction."""
+  asset: Entity = env.scene[asset_cfg.name]
+  body_ids, _ = asset.find_bodies(feet_names)
+  feet = asset.data.body_link_pos_w[:, body_ids, :]  # [B, 2, 3]
+  root = asset.data.root_link_pos_w  # [B, 3]
+  rel = feet - root.unsqueeze(1)
+  quat = asset.data.root_link_quat_w[:, None, :].expand(-1, 2, -1)
+  body = quat_apply_inverse(quat, rel)
+  dist = torch.abs(body[:, 0, 1] - body[:, 1, 1])
+  return (threshold - dist).clamp(min=0.0)
+
+
+def fly(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  threshold: float = 1.0,
+) -> torch.Tensor:
+  """Penalize all feet simultaneously airborne (force below threshold)."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  if sensor.data.force_history is not None:
+    force_mag = torch.norm(sensor.data.force_history, dim=-1).max(dim=-1)[0]
+  else:
+    assert sensor.data.force is not None
+    force_mag = torch.norm(sensor.data.force, dim=-1)
+  return (torch.sum((force_mag > threshold).int(), dim=-1) < 0.5).float()
+
+
+def joint_deviation_l1(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """L1 deviation of selected joints from their default positions."""
+  asset: Entity = env.scene[asset_cfg.name]
+  diff = (
+    asset.data.joint_pos[:, asset_cfg.joint_ids]
+    - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  )
+  return torch.sum(torch.abs(diff), dim=1)
+
+
+def undesired_contacts(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  threshold: float = 1.0,
+) -> torch.Tensor:
+  """Count (body, substep) pairs on undesired bodies exceeding threshold.
+
+  Uses force history when available so brief mid-substep collisions count.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  data = sensor.data
+  if data.force_history is not None:
+    force_mag = torch.norm(data.force_history, dim=-1)  # [B, N, H]
+    return (force_mag > threshold).sum(dim=(1, 2)).float()
+  if data.force is not None:
+    force_mag = torch.norm(data.force, dim=-1)  # [B, N]
+    return (force_mag > threshold).sum(dim=1).float()
+  assert data.found is not None
+  return data.found.sum(dim=1).float()
+
+
+def joint_power_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalise |tau * qd| per joint (mechanical power).
+
+  Despite the _l2 name this sums absolute power, not squared power.
+  Uses actuator_force (indexed by actuator_ids) and joint_vel (indexed by
+  joint_ids). Defensively trims to the shorter of the two because the caller
+  may filter by joint regex on both — on Kuavo the mapping is 1:1 so the
+  trim has no effect in practice.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  tau = asset.data.actuator_force[:, asset_cfg.actuator_ids]
+  qd = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  num = min(tau.shape[1], qd.shape[1])
+  return torch.sum(torch.abs(tau[:, :num] * qd[:, :num]), dim=1)
+
