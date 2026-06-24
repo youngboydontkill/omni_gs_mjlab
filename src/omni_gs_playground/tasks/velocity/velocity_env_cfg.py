@@ -26,7 +26,7 @@ from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 import mjlab.terrains as terrain_gen
 from mjlab.terrains import TerrainEntityCfg
-from mjlab.terrains.config import ROUGH_TERRAINS_CFG
+from mjlab.terrains.config import flat, ROUGH_TERRAINS_CFG
 from mjlab.terrains.terrain_generator import TerrainGeneratorCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
@@ -40,23 +40,30 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
   num_cols=10,
   difficulty_range=(0.0, 1.0),
   sub_terrains={
-    "flat": terrain_gen.BoxFlatTerrainCfg(proportion=0.4),
+    "flat": flat(proportion=0.4),
     "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
-      proportion=0.1,
+      proportion=0.05,
       step_height_range=(0.02, 0.14),
       step_width=0.32,
       platform_width=2.0,
       border_width=0.8,
     ),
     "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-      proportion=0.1,
+      proportion=0.05,
       step_height_range=(0.02, 0.14),
       step_width=0.32,
       platform_width=2.0,
       border_width=0.8,
     ),
+    "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+      proportion=0.1,
+      slope_range=(0.0, 0.5),
+      platform_width=2.0,
+      border_width=0.25,
+      inverted=True,
+    ),
     "tilted_grid": terrain_gen.BoxTiltedGridTerrainCfg(
-      proportion=0.05,
+      proportion=0.1,
       grid_width=0.75,
       tilt_range_deg=24.0,
       height_range=0.35,
@@ -65,7 +72,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "box_random_grid": terrain_gen.BoxRandomGridTerrainCfg(
-      proportion=0.05,
+      proportion=0.10,
       grid_width=0.45,
       grid_height_range=(0.02, 0.45),
       platform_width=1.2,
@@ -105,7 +112,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "random_spread_boxes": terrain_gen.BoxRandomSpreadTerrainCfg(
-      proportion=0.15,
+      proportion=0.05,
       num_boxes=60,
       box_width_range=(0.2, 1.2),
       box_length_range=(0.2, 1.2),

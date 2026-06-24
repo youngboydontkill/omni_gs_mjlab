@@ -63,8 +63,16 @@ def _kuavo_rough_env_cfg(
   depth_camera_parent_body: str,
   depth_camera_pos: tuple[float, float, float],
   play: bool,
+  depth_camera_quat: tuple[float, float, float, float] | None = None,
 ) -> ManagerBasedRlEnvCfg:
-  """Create a Kuavo rough terrain velocity configuration."""
+  """Create a Kuavo rough terrain velocity configuration.
+
+  ``depth_camera_quat`` is optional: when ``None`` the depth sensor keeps the
+  shared S54-derived orientation from :func:`make_kuavo_velocity_env_cfg`.
+  Pass a ``(w, x, y, z)`` quaternion to override it for robots whose real-world
+  camera mount uses a different pitch (e.g. S45 waist camera at 0.698 rad
+  vs. the S54 head camera at ~0.593 rad encoded in the default quat).
+  """
   cfg = make_velocity_env_cfg()
 
   cfg.sim.mujoco.ccd_iterations = 500
@@ -83,6 +91,8 @@ def _kuavo_rough_env_cfg(
   )
   depth_camera.parent_body = depth_camera_parent_body
   depth_camera.pos = depth_camera_pos
+  if depth_camera_quat is not None:
+    depth_camera.quat = depth_camera_quat
 
   feet_ground_cfg = ContactSensorCfg(
     name="feet_ground_contact",
@@ -231,8 +241,19 @@ def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     controlled_joints=S45_CONTROLLED_JOINTS,
     viewer_body=ROOT_BODY,
     has_waist=False,
+    # Waist camera pose from
+    # gauss-gym-Leju/resources/robots/biped_s45/urdf/biped_s45_waist_cam.urdf:
+    #   <joint name="waist_camera" type="fixed">
+    #     <origin xyz="0.168717483101422 0 0.01355599662743" rpy="0 0.698 0"/>
+    #     <parent link="base_link"/>
+    #   </joint>
+    # The quat below = R_y(0.698) composed with the MuJoCo camera optical
+    # rotation (camera looks down its local -Z, with +X right, +Y up); the
+    # default S54 quat encodes a 0.593 rad pitch and would tilt the S45
+    # waist cam 6° too shallow if reused.
     depth_camera_parent_body="robot/base_link",
-    depth_camera_pos=(0.0787, 0.0, 0.082951),
+    depth_camera_pos=(0.168717483101422, 0.0, 0.01355599662743),
+    depth_camera_quat=(0.6408367, 0.29887844, -0.29887844, -0.6408367),
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
@@ -527,8 +548,10 @@ def kuavo_s45_rough_defm_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     controlled_joints=S45_CONTROLLED_JOINTS,
     viewer_body=ROOT_BODY,
     has_waist=False,
+    # Same URDF-derived waist camera pose as kuavo_s45_rough_env_cfg.
     depth_camera_parent_body="robot/base_link",
-    depth_camera_pos=(0.0787, 0.0, 0.082951),
+    depth_camera_pos=(0.168717483101422, 0.0, 0.01355599662743),
+    depth_camera_quat=(0.6408367, 0.29887844, -0.29887844, -0.6408367),
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
