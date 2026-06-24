@@ -609,12 +609,18 @@ def illegal_dof_pos_barrier(
   feasible = torch.tensor(
     _ANKLE_FEASIBLE_REGION, device=ankle.device, dtype=ankle.dtype
   )  # [7, 3]
-  eps = 0.05
+  # Softened relative to Leju-IsaacLab default (eps=0.05, max_penalty=25.0):
+  # at eps=0.05 the -log(x+eps) branch easily exceeds 1e2 per joint when the
+  # ankle approaches the boundary, which combined with the EMP-reward stack
+  # destabilises PPO and drives the policy into states where MuJoCo's solver
+  # emits NaN qvel. eps=0.1 + max_penalty=10.0 keeps the same qualitative
+  # barrier shape but caps the penalty an order of magnitude lower.
+  eps = 0.1
   left = -feasible[:, -1] - torch.matmul(ankle[:, :2], feasible[:, :-1].T)
   right = -feasible[:, -1] - torch.matmul(ankle[:, 2:], feasible[:, :-1].T)
   left = torch.where((left < -eps).any(dim=-1, keepdim=True), 0.0, left)
   right = torch.where((right < -eps).any(dim=-1, keepdim=True), 0.0, right)
-  max_penalty = 25.0
+  max_penalty = 10.0
   l = torch.clamp(-torch.log(left + eps), min=0.0, max=max_penalty)
   r = torch.clamp(-torch.log(right + eps), min=0.0, max=max_penalty)
   return (l + r).sum(dim=1)

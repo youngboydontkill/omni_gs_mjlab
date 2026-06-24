@@ -18,7 +18,12 @@ def foot_height(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:
   asset: Entity = env.scene[asset_cfg.name]
-  return asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # (num_envs, num_sites)
+  z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # (num_envs, num_sites)
+  # Site positions can briefly become NaN/Inf if the physics solver fails
+  # (e.g. on the first frame of a respawned env or when a foot site lands on
+  # a degenerate ray query). Clamp to a safe range so the critic observation
+  # never propagates NaN into PPO.
+  return torch.nan_to_num(z, nan=0.0, posinf=1.0, neginf=0.0)
 
 
 def foot_air_time(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor:

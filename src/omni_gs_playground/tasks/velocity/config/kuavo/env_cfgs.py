@@ -68,10 +68,12 @@ def _kuavo_rough_env_cfg(
   cfg = make_velocity_env_cfg()
 
   cfg.sim.mujoco.ccd_iterations = 500
-  cfg.sim.contact_sensor_maxmatch = 500
-  # cfg.sim.nconmax = 48
-  # 这里感觉非常影响显存阿
-  cfg.sim.nconmax = 64
+  cfg.sim.contact_sensor_maxmatch = 1000
+  # nconmax bumped from 64 to 128: rough terrain + new undesired_body_contact
+  # sensor + EMP rewards push contact-count peaks past 64 on certain
+  # sub-terrains, which silently fails the MuJoCo solver and propagates
+  # NaN/Inf into qpos/qvel (and therefore into actor + critic observations).
+  cfg.sim.nconmax = 128
   # cfg.sim.nconmax = 128  # 每个 world 分配的 contact
   # cfg.sim.njmax = 2048  # 每个 world 分配的 constraint
 
