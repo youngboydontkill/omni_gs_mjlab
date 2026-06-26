@@ -400,7 +400,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     # without requiring any walking, anchoring the static "stand still" optimum.
     "track_default_arm_pos": RewardTermCfg(
       func=mdp.track_default_arm_pos,
-      weight=1.0,
+      weight=3.0,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
         "alpha": 5.0,
@@ -417,7 +417,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     # its regularizer stay in proportion after the rebalance.
     "joint_deviation_arms": RewardTermCfg(
       func=mdp.joint_deviation_l1,
-      weight=-0.05,
+      weight=-0.1,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
       },
@@ -566,6 +566,24 @@ def kuavo_s45_rough_defm_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
+  # Bilateral symmetry loss (legs only): penalize left/right swing-amplitude
+  # asymmetry via an EMA of deviation-from-default per side. Targets the
+  # observed "one leg swings higher" failure without a gait phase or mirror-sign
+  # table. Scoped to the DeFM task only; the CNN S45-Rough task (which also
+  # calls _apply_s45_emp_rewards) is unaffected. Reward-level term, so it stays
+  # compatible with the DeFM feature cache (unlike the PPO Symmetry extension).
+  cfg.rewards["leg_amplitude_symmetry"] = RewardTermCfg(
+    func=mdp.bilateral_amplitude_symmetry,
+    weight=-1.0,
+    params={
+      "asset_cfg": _scene_cfg(
+        joint_names=r"leg_[lr][1-6]_joint", preserve_order=True
+      ),
+      "command_name": "twist",
+      "command_threshold": 0.01,
+      "alpha": 0.05,
+    },
+  )
   # Expose true base linear velocity to the actor (in addition to the gyro-only
   # angular velocity it already sees). DeFM depth features alone are not enough
   # for the policy to recover its own body velocity, and feeding ground-truth

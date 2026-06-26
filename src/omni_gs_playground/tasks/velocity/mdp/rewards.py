@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 import torch
@@ -710,4 +711,140 @@ def joint_power_l2(
   qd = asset.data.joint_vel[:, asset_cfg.joint_ids]
   num = min(tau.shape[1], qd.shape[1])
   return torch.sum(torch.abs(tau[:, :num] * qd[:, :num]), dim=1)
+
+
+# ---------------------------------------------------------------------------
+# Bilateral (left/right) symmetry
+# ---------------------------------------------------------------------------
+
+
+# Matches the side letter and trailing index in a mirrored joint name, e.g.
+# "leg_l3_joint" -> ("l", 3), "zarm_r7_joint" -> ("r", 7). Used to pair left and
+# right joints regardless of MuJoCo's joint ordering.
+_SIDE_INDEX_RE = re.compile(r"([lr])(\d+)")
+
+
+class bilateral_amplitude_symmetry:
+  """Penalize left/right swing-amplitude asymmetry via an EMA of joint deviation.
+
+  Motivation: DeFM policies can converge to an asymmetric gait where one leg
+  (e.g. the right) consistently swings higher than the other. This term
+  discourages that without dictating the gait shape.
+
+  For each mirrored joint pair (e.g. ``leg_l3_joint`` / ``leg_r3_joint``) it
+  tracks an EMA of the squared deviation from the joint's default pose — a
+  per-side ``amplitude**2`` proxy — and penalizes the mean absolute difference
+  of the per-side amplitudes ``sqrt(EMA)`` across pairs.
+
+  Why squared deviation: the square removes the bilateral mirror sign, so no
+  per-joint sign table, gait phase, or trajectory buffer is needed. The term is
+  invariant to the legs' anti-phase relationship (when the left knee is flexed
+  the right is extended) and only fires when one side deviates more than the
+  other over the EMA window.
+
+  The returned value is a positive *cost*; pair it with a negative weight. It is
+  gated by the command magnitude (no penalty while standing) and damped while the
+  base is tipping (reuses the EMP upright gate). The EMA is reset on episode
+  boundaries via ``env.reset_buf`` so a fresh episode starts from a clean slate.
+
+  Note: this is a reward-level term and is fully compatible with the DeFM feature
+  cache (unlike the PPO-level ``rsl_rl`` Symmetry extension, which is mutually
+  exclusive with feature caching).
+
+  Tuning:
+    - ``weight``: start around ``-1.0``; raise (more negative) if the asymmetry
+      persists, lower if it distorts the gait. Monitor ``Metrics/leg_symmetry_gap_mean``.
+    - ``alpha``: EMA smoothing factor in (0, 1]. Smaller = more averaging / slower
+      tracking. With dt=0.02s, ``alpha=0.05`` averages over ~1 gait cycle (~0.4s).
+  """
+
+  def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+    asset_cfg = cfg.params["asset_cfg"]
+    asset: Entity = env.scene[asset_cfg.name]
+
+    joint_ids, joint_names = asset.find_joints(asset_cfg.joint_names)
+    if not joint_ids:
+      raise ValueError(
+        "bilateral_amplitude_symmetry: asset_cfg.joint_names "
+        f"{asset_cfg.joint_names!r} matched no joints on asset "
+        f"{asset_cfg.name!r}."
+      )
+
+    # Pair joints by side letter + index so left[i] faces right[i] regardless of
+    # the order find_joints returns them in.
+    left_ids: list[int] = []
+    right_ids: list[int] = []
+    left_nums: list[int] = []
+    right_nums: list[int] = []
+    for jid, jname in zip(joint_ids, joint_names):
+      m = _SIDE_INDEX_RE.search(jname)
+      if m is None:
+        continue
+      num = int(m.group(2))
+      if m.group(1) == "l":
+        left_ids.append(jid)
+        left_nums.append(num)
+      else:
+        right_ids.append(jid)
+        right_nums.append(num)
+    # Sort each side by joint number so pairs line up (l_i <-> r_i).
+    left_ids = [left_ids[i] for i in sorted(range(len(left_ids)), key=left_nums.__getitem__)]
+    right_ids = [
+      right_ids[i] for i in sorted(range(len(right_ids)), key=right_nums.__getitem__)
+    ]
+    if len(left_ids) != len(right_ids) or len(left_ids) == 0:
+      raise ValueError(
+        "bilateral_amplitude_symmetry: could not pair left/right joints from "
+        f"{joint_names!r} (got {len(left_ids)} left, {len(right_ids)} right). "
+        "Pass a joint_names expression that matches BOTH sides, e.g. "
+        "r'leg_[lr][1-6]_joint'."
+      )
+
+    self.asset_name = asset_cfg.name
+    self.left_ids = torch.as_tensor(left_ids, device=env.device, dtype=torch.long)
+    self.right_ids = torch.as_tensor(right_ids, device=env.device, dtype=torch.long)
+
+    self.default_joint_pos = asset.data.default_joint_pos
+    assert self.default_joint_pos is not None, "asset default_joint_pos is None."
+
+    self.amp_sq_left = torch.zeros(
+      (env.num_envs, len(left_ids)), device=env.device, dtype=torch.float32
+    )
+    self.amp_sq_right = torch.zeros_like(self.amp_sq_left)
+
+  def __call__(
+    self,
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    command_name: str = "twist",
+    command_threshold: float = 0.01,
+    alpha: float = 0.05,
+  ) -> torch.Tensor:
+    # Drop stale amplitude on episode boundaries: reset_buf is computed before
+    # reward_manager.compute(), so it marks envs terminating this step.
+    reset_envs = getattr(env, "reset_buf", None)
+    if reset_envs is not None and torch.any(reset_envs):
+      self.amp_sq_left[reset_envs] = 0.0
+      self.amp_sq_right[reset_envs] = 0.0
+
+    asset: Entity = env.scene[self.asset_name]
+    joint_pos = asset.data.joint_pos
+
+    d_left = joint_pos[:, self.left_ids] - self.default_joint_pos[:, self.left_ids]
+    d_right = joint_pos[:, self.right_ids] - self.default_joint_pos[:, self.right_ids]
+
+    self.amp_sq_left = (1.0 - alpha) * self.amp_sq_left + alpha * torch.square(d_left)
+    self.amp_sq_right = (1.0 - alpha) * self.amp_sq_right + alpha * torch.square(d_right)
+
+    amp_left = torch.sqrt(self.amp_sq_left)
+    amp_right = torch.sqrt(self.amp_sq_right)
+    gap = torch.abs(amp_left - amp_right)  # [B, num_pairs]
+
+    # Gate: only enforce symmetry while commanded to move and while upright.
+    cmd_norm = _command_speed_norm(env, command_name)
+    gate = (cmd_norm > command_threshold).float() * _upright_gate(env, asset_cfg)
+
+    cost = torch.mean(gap, dim=1) * gate  # [B]
+    env.extras["log"]["Metrics/leg_symmetry_gap_mean"] = torch.mean(gap)
+    return cost
 

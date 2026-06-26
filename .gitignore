@@ -12,3 +12,6 @@ wheels/
 # for RL tranining logs
 logs/
 wandb/
+
+# local md
+*.md

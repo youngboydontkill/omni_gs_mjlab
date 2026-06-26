@@ -164,6 +164,13 @@ def kuavo_s45_defm_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     "actor": ("actor", "actor_depth"),
     "critic": ("critic", "critic_depth"),
   }
+  # std 从「状态无关标量参数」改为「actor MLP 头输出的状态相关 std」(mean‖std)。
+  # 根因修复:状态无关 std 在 advantage normalization 下 policy-loss 对其净梯度≈0,
+  # entropy_coef 会单方面把 std 顶高不衰减(2026-06-25 run 卡在 ~1.59)。状态相关后
+  # policy-loss 重新对 std 产生梯度,策略自信时主动把 std 拉低。详见
+  # doc/action_std_in_ppo.md。导出走 deterministic mean,缓存/ONNX 均不受影响。
+  cfg.actor.distribution_cfg["class_name"] = "HeteroscedasticGaussianDistribution"
+  cfg.actor.distribution_cfg["init_std"] = 0.5  # 原本 1.0;降低早期探索噪声,减少乱抖摔
   cfg.experiment_name = "kuavo_s45_defm_velocity"
   return cfg
 
