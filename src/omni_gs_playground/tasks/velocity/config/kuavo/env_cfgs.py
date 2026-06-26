@@ -313,7 +313,9 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     cfg.rewards.pop(key, None)
 
   # 3) Re-weight surviving terms.
-  cfg.rewards["track_linear_velocity"].weight = 5.0
+  # P1 (see doc/terrain_curriculum_stuck.md §3): strengthen the forward
+  # signal to pull the policy out of the "stand still" local optimum.
+  cfg.rewards["track_linear_velocity"].weight = 8.0
   cfg.rewards["track_angular_velocity"].weight = 3.0
   cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.25)
   cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.25)
@@ -367,7 +369,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     ),
     "feet_air_time": RewardTermCfg(
       func=mdp.feet_air_time_positive_biped,
-      weight=2.0,
+      weight=4.0,
       params={
         "command_name": "twist",
         "threshold": 0.5,
@@ -394,9 +396,11 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         "asset_cfg": _scene_cfg(),
       },
     ),
+    # P1: 3.0 -> 1.0. Arms are 14/26 DoF; at 3.0 this term alone paid ~1.4/step
+    # without requiring any walking, anchoring the static "stand still" optimum.
     "track_default_arm_pos": RewardTermCfg(
       func=mdp.track_default_arm_pos,
-      weight=3.0,
+      weight=1.0,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
         "alpha": 5.0,
@@ -409,9 +413,11 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         "asset_cfg": _scene_cfg(joint_names=hip_joints, preserve_order=True),
       },
     ),
+    # P1: halved alongside track_default_arm_pos so the arm-posture bonus and
+    # its regularizer stay in proportion after the rebalance.
     "joint_deviation_arms": RewardTermCfg(
       func=mdp.joint_deviation_l1,
-      weight=-0.1,
+      weight=-0.05,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
       },
@@ -449,18 +455,23 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         ),
       },
     ),
+    # P1: -5.0 -> -1.0. At -5.0 this was a steep trap the std=1.3 noisy policy
+    # could not avoid, so it suppressed every gait that risks narrow foot spacing.
     "feet_too_near": RewardTermCfg(
       func=mdp.feet_too_near_humanoid,
-      weight=-5.0,
+      weight=-1.0,
       params={
         "asset_cfg": _scene_cfg(),
         "threshold": 0.15,
         "feet_names": _S45_FEET_NAMES,
       },
     ),
+    # P1: -10.0 -> -2.0. Soften the steepest gait trap so the policy can
+    # explore airborne phases without a catastrophic penalty; the P0 std drop
+    # already removes most of the jitter that triggered this term.
     "fly": RewardTermCfg(
       func=mdp.fly,
-      weight=-10.0,
+      weight=-2.0,
       params={
         "sensor_name": _S45_FEET_GROUND_SENSOR,
         "threshold": 1.0,
@@ -555,6 +566,15 @@ def kuavo_s45_rough_defm_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
+  # Expose true base linear velocity to the actor (in addition to the gyro-only
+  # angular velocity it already sees). DeFM depth features alone are not enough
+  # for the policy to recover its own body velocity, and feeding ground-truth
+  # base_lin_vel measurably improves velocity tracking on rough terrain. We
+  # reuse the critic's term (same robot/BodyVel sensor + ±0.5 m/s noise) so the
+  # actor observation matches the privileged signal up to noise corruption.
+  cfg.observations["actor"].terms["base_lin_vel"] = deepcopy(
+    cfg.observations["critic"].terms["base_lin_vel"]
+  )
   depth_camera = next(
     sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
   )

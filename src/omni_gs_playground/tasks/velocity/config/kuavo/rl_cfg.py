@@ -116,6 +116,14 @@ def kuavo_s45_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     "actor": ("actor", "actor_depth"),
     "critic": ("critic", "critic_depth"),
   }
+  # P0 (see doc/terrain_curriculum_stuck.md §5/§6): the state-independent
+  # scalar std never decays because the entropy bonus dominates its gradient
+  # (advantage normalization nullifies the policy-loss gradient on std). Cut
+  # entropy_coef 10x and halve init_std so the policy can commit to a gait
+  # instead of injecting ~0.1 rad/step joint noise that keeps causing falls.
+  cfg.algorithm.entropy_coef = 5.0e-3
+  cfg.actor.distribution_cfg["init_std"] = 0.5
+
   cfg.experiment_name = "kuavo_s45_velocity"
   return cfg
 
