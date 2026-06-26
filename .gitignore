@@ -14,4 +14,4 @@ logs/
 wandb/
 
 # local md
-*.md
+# *.md
