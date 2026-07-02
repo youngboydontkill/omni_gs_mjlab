@@ -8,7 +8,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor, ContactSensor
+from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -847,4 +847,66 @@ class bilateral_amplitude_symmetry:
     cost = torch.mean(gap, dim=1) * gate  # [B]
     env.extras["log"]["Metrics/leg_symmetry_gap_mean"] = torch.mean(gap)
     return cost
+
+
+def toe_touch(
+  env: ManagerBasedRlEnv,
+  sensor_name_l: str,
+  sensor_name_r: str,
+  feet_length: float = 0.178,
+  margin: float = 0.01,
+) -> torch.Tensor:
+  """Penalize a toe getting close to / contacting a vertical face.
+
+  Each foot carries a single forward-pointing raycaster (attached to
+  ``leg_[lr]6_link``, ``direction=(1, 0, 0)`` in the base frame). The measured
+  ray distance is compared against the foot length:
+
+  - ``dist <= feet_length``: toe is at / past a vertical face -> penalty ``1.0``.
+  - ``feet_length < dist <= feet_length + margin``: cubic ramp ``(1 - x)^3`` where
+    ``x = (dist - feet_length) / margin`` (grows smoothly from 0 to 1 as the toe
+    approaches).
+  - ``dist > feet_length + margin``: no contact -> ``0.0``.
+
+  MJLab's ``RayCastSensor`` reports ``distances == -1`` for rays that miss (or
+  exceed ``max_distance``). Together with NaN/Inf guarding, all "no hit" cases are
+  mapped to a large distance so they contribute zero penalty.
+
+  Args:
+    env: The environment.
+    sensor_name_l: Name of the left-toe forward RayCastSensor.
+    sensor_name_r: Name of the right-toe forward RayCastSensor.
+    feet_length: Toe reach from the sensor frame; ``dist`` at/under this is a hit.
+    margin: Ramp width in front of ``feet_length`` over which the penalty grows.
+
+  Returns:
+    Tensor of shape ``[B]``: sum of the left and right toe penalties (each in
+    ``[0, 1]``).
+  """
+  raycaster_l: RayCastSensor = env.scene[sensor_name_l]
+  raycaster_r: RayCastSensor = env.scene[sensor_name_r]
+
+  # Single ray per sensor -> take ray 0. distances is [B, N]; -1 marks a miss.
+  no_contact = feet_length + margin + 1.0
+  dist_l = raycaster_l.data.distances[:, 0]
+  dist_r = raycaster_r.data.distances[:, 0]
+
+  # Misses (-1) and any NaN/Inf are treated as "no contact" (large distance).
+  dist_l = torch.where(dist_l < 0, dist_l.new_full((), no_contact), dist_l)
+  dist_r = torch.where(dist_r < 0, dist_r.new_full((), no_contact), dist_r)
+  dist_l = torch.nan_to_num(dist_l, nan=no_contact, posinf=no_contact, neginf=no_contact)
+  dist_r = torch.nan_to_num(dist_r, nan=no_contact, posinf=no_contact, neginf=no_contact)
+
+  threshold1 = feet_length
+  threshold2 = feet_length + margin
+
+  def _penalty(dist: torch.Tensor) -> torch.Tensor:
+    x = (dist - threshold1) / margin  # in (0, 1] on the ramp band
+    ramp = (1.0 - x) ** 3
+    penalty = torch.zeros_like(dist)
+    penalty = torch.where((dist > threshold1) & (dist <= threshold2), ramp, penalty)
+    penalty = torch.where(dist <= threshold1, torch.ones_like(dist), penalty)
+    return penalty
+
+  return _penalty(dist_l) + _penalty(dist_r)
 

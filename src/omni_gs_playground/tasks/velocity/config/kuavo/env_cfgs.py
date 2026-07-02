@@ -20,7 +20,13 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.sensor import (
+  ContactMatch,
+  ContactSensorCfg,
+  GridPatternCfg,
+  ObjRef,
+  RayCastSensorCfg,
+)
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
 from omni_gs_playground.tasks.velocity import mdp
@@ -257,7 +263,7 @@ def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
-  _separate_depth_observations(cfg, normalize=True)
+  _separate_depth_observations(cfg, normalize=False)
   return cfg
 
 
@@ -298,6 +304,35 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     history_length=4,
   )
   cfg.scene.sensors = (cfg.scene.sensors or ()) + (undesired_body_contact_cfg,)
+
+  # Forward-pointing single-ray raycasters on each toe. Attached to the foot
+  # body (leg_[lr]6_link) and aimed along +X in the base frame; used by the
+  # `toe_touch` reward to penalize a toe approaching / contacting a vertical
+  # face (stair riser, wall). MJLab's RayCastSensorCfg has no origin offset
+  # (unlike IsaacLab's OffsetCfg): the ray starts at the foot body frame (ankle
+  # joint), a few cm above the sole; the forward ray still detects vertical
+  # faces ahead and the offset is symmetric across both feet.
+  _toe_scanner_kwargs = dict(
+    ray_alignment="base",
+    pattern=GridPatternCfg(size=(0.0, 0.0), resolution=0.01, direction=(1.0, 0.0, 0.0)),
+    max_distance=1.0,
+    exclude_parent_body=True,
+    debug_vis=True,
+  )
+  feet_l_forward_scanner = RayCastSensorCfg(
+    name="feet_l_forward_scanner",
+    frame=ObjRef(type="body", name=_S45_FEET_NAMES[0], entity="robot"),
+    **_toe_scanner_kwargs,
+  )
+  feet_r_forward_scanner = RayCastSensorCfg(
+    name="feet_r_forward_scanner",
+    frame=ObjRef(type="body", name=_S45_FEET_NAMES[1], entity="robot"),
+    **_toe_scanner_kwargs,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
+    feet_l_forward_scanner,
+    feet_r_forward_scanner,
+  )
 
   # Verify air-time tracking is on for the feet sensor.
   feet_ground = next(
@@ -483,6 +518,18 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
       params={
         "sensor_name": _S45_UNDESIRED_CONTACT_SENSOR,
         "threshold": 1.0,
+      },
+    ),
+    # Penalize a toe approaching / contacting a vertical face (stair riser,
+    # wall) via the per-foot forward raycasters added above.
+    "toe_touch": RewardTermCfg(
+      func=mdp.toe_touch,
+      weight=-1.0,
+      params={
+        "sensor_name_l": "feet_l_forward_scanner",
+        "sensor_name_r": "feet_r_forward_scanner",
+        "feet_length": 0.178,
+        "margin": 0.01,
       },
     ),
   })
