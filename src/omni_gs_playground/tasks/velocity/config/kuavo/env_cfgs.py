@@ -726,6 +726,10 @@ def kuavo_s45_flat_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     s for s in (cfg.scene.sensors or ()) if s.name != "depth"
   )
 
+  # Blind task: stack proprioception history (5-frame observation).
+  # for group in cfg.observations.values():
+  #   group.history_length = 5
+
   # Flat terrain overrides.
   cfg.sim.njmax = 300
   cfg.sim.mujoco.ccd_iterations = 50

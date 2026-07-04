@@ -49,7 +49,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       border_width=0.8,
     ),
     "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-      proportion=0.15,
+      proportion=0.1,
       step_height_range=(0.02, 0.14),
       step_width=0.32,
       platform_width=2.0,
@@ -63,7 +63,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
     #   inverted=True,
     # ),
     "tilted_grid": terrain_gen.BoxTiltedGridTerrainCfg(
-      proportion=0.1,
+      proportion=0.05,
       grid_width=0.75,
       tilt_range_deg=24.0,
       height_range=0.35,
@@ -72,7 +72,7 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "box_random_grid": terrain_gen.BoxRandomGridTerrainCfg(
-      proportion=0.10,
+      proportion=0.05,
       grid_width=0.45,
       grid_height_range=(0.02, 0.45),
       platform_width=1.2,
@@ -90,13 +90,13 @@ NAVIGATION_TERRAINS_CFG = TerrainGeneratorCfg(
       floor_depth=1.5,
     ),
     "narrow_beams": terrain_gen.BoxNarrowBeamsTerrainCfg(
-      proportion=0.05,
-      num_beams=12,
-      beam_width_range=(0.18, 0.45),
+      proportion=0.2,
+      num_beams=8,
+      beam_width_range=(0.25, 0.45),
       beam_height=0.25,
       spacing=0.7,
       platform_width=1.2,
-      border_width=0.25,
+      border_width=0.3,
       floor_depth=1.5,
     ),
     "stepping_stones": terrain_gen.BoxSteppingStonesTerrainCfg(
@@ -141,37 +141,22 @@ GEOLOCO_TERRAINS_CFG = TerrainGeneratorCfg(
     num_cols=10,
     difficulty_range=(0.0, 1.0),
     sub_terrains={
+        # 精简到 9 个标志地形(4 类 x ~25%),覆盖 GeoLoco 训练谱里的关键几何
+        # 模式,移除同类内仅参数微调的冗余子地形。
+
         # ============================================================
-        # Up stairs: 25%
-        # GeoLoco: MeshPyramidStairs + HfSteppingStones as noisy stairs
-        # mjlab: BoxPyramidStairs + BoxRandomStairs approximation
+        # Up stairs: 25%  规则上行 + 噪声上行(代表非规则楼梯)
         # ============================================================
-        "stairs_up_26": terrain_gen.BoxPyramidStairsTerrainCfg(
-            proportion=0.05,
-            step_height_range=(0.0, 0.23),
-            step_width=0.26,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        ),
         "stairs_up_30": terrain_gen.BoxPyramidStairsTerrainCfg(
-            proportion=0.05,
+            proportion=0.13,
             step_height_range=(0.0, 0.23),
             step_width=0.30,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
         ),
-        "stairs_up_34": terrain_gen.BoxPyramidStairsTerrainCfg(
-            proportion=0.05,
-            step_height_range=(0.0, 0.23),
-            step_width=0.34,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        ),
         "stairs_up_noisy": terrain_gen.BoxRandomStairsTerrainCfg(
-            proportion=0.10,
+            proportion=0.12,
             step_height_range=(0.0, 0.22),
             step_width=0.30,
             platform_width=2.5,
@@ -179,42 +164,19 @@ GEOLOCO_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
 
         # ============================================================
-        # Down stairs: 25%
-        # GeoLoco: MeshInvertedPyramidStairs + slope/discrete variants
+        # Down stairs: 25%  规则下行 + 离散下行(代表非连续下行)
+        # stairs_down_slope 与 support 段的 slope_down 几何重合,故仅保留后者。
         # ============================================================
-        "stairs_down_26": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-            proportion=0.05,
-            step_height_range=(0.0, 0.23),
-            step_width=0.26,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        ),
         "stairs_down_30": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-            proportion=0.05,
+            proportion=0.13,
             step_height_range=(0.0, 0.23),
             step_width=0.30,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
         ),
-        "stairs_down_34": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-            proportion=0.05,
-            step_height_range=(0.0, 0.23),
-            step_width=0.34,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
-        ),
-        "stairs_down_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.05,
-            slope_range=(0.15, 0.35),
-            platform_width=2.0,
-            border_width=0.25,
-            inverted=True,
-        ),
         "stairs_down_discrete": terrain_gen.BoxRandomGridTerrainCfg(
-            proportion=0.05,
+            proportion=0.12,
             grid_width=0.30,
             grid_height_range=(0.0, 0.18),
             platform_width=2.5,
@@ -223,25 +185,11 @@ GEOLOCO_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
 
         # ============================================================
-        # Crossing terrains: 25%
-        # GeoLoco: MeshGap + MeshPit
-        # mjlab: use stepping stones / nested rings / random grid as
-        # approximation for gap, pit and foot-placement terrain.
+        # Crossing: 25%  踏石(gap 标志) + 嵌套环(pit 标志)
+        # gap_easy/hard 为 gap_medium 的难度变体,pit_double 与 pit 同类,均移除。
         # ============================================================
-        "gap_easy": terrain_gen.BoxSteppingStonesTerrainCfg(
-            proportion=0.06,
-            stone_size_range=(0.55, 0.85),
-            stone_distance_range=(0.05, 0.20),
-            stone_height=0.18,
-            stone_height_variation=0.08,
-            stone_size_variation=0.10,
-            displacement_range=0.05,
-            platform_width=2.5,
-            border_width=0.25,
-            floor_depth=1.0,
-        ),
         "gap_medium": terrain_gen.BoxSteppingStonesTerrainCfg(
-            proportion=0.05,
+            proportion=0.13,
             stone_size_range=(0.45, 0.75),
             stone_distance_range=(0.10, 0.35),
             stone_height=0.20,
@@ -252,42 +200,20 @@ GEOLOCO_TERRAINS_CFG = TerrainGeneratorCfg(
             border_width=0.25,
             floor_depth=1.2,
         ),
-        # "gap_hard": terrain_gen.BoxSteppingStonesTerrainCfg(
-        #     proportion=0.04,
-        #     stone_size_range=(0.35, 0.65),
-        #     stone_distance_range=(0.25, 0.50),
-        #     stone_height=0.22,
-        #     stone_height_variation=0.15,
-        #     stone_size_variation=0.18,
-        #     displacement_range=0.12,
-        #     platform_width=1.8,
-        #     border_width=0.25,
-        #     floor_depth=1.5,
-        # ),
-        # "pit": terrain_gen.BoxNestedRingsTerrainCfg(
-        #     proportion=0.05,
-        #     num_rings=5,
-        #     ring_width_range=(0.30, 0.60),
-        #     gap_range=(0.05, 0.25),
-        #     height_range=(0.05, 0.30),
-        #     platform_width=2.0,
-        #     border_width=0.25,
-        #     floor_depth=0.35,
-        # ),
-        # "pit_double": terrain_gen.BoxNestedRingsTerrainCfg(
-        #     proportion=0.05,
-        #     num_rings=8,
-        #     ring_width_range=(0.25, 0.55),
-        #     gap_range=(0.10, 0.35),
-        #     height_range=(0.05, 0.25),
-        #     platform_width=1.5,
-        #     border_width=0.25,
-        #     floor_depth=0.45,
-        # ),
+        "pit": terrain_gen.BoxNestedRingsTerrainCfg(
+            proportion=0.12,
+            num_rings=5,
+            ring_width_range=(0.30, 0.60),
+            gap_range=(0.05, 0.25),
+            height_range=(0.05, 0.30),
+            platform_width=2.0,
+            border_width=0.25,
+            floor_depth=0.35,
+        ),
 
         # ============================================================
-        # Support terrains: 25%
-        # Rough / slope / boxes for visual sim2real generalization
+        # Support: 25%  粗糙噪声 + 斜坡上下,覆盖视觉 sim2real 的基础纹理
+        # boxes 与 stairs_down_discrete 同属随机网格,移除避免重复。
         # ============================================================
         "rough": terrain_gen.HfRandomUniformTerrainCfg(
             proportion=0.10,
@@ -296,26 +222,18 @@ GEOLOCO_TERRAINS_CFG = TerrainGeneratorCfg(
             border_width=0.25,
         ),
         "slope_up": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.05,
+            proportion=0.075,
             slope_range=(0.0, 0.35),
             platform_width=2.0,
             border_width=0.25,
             inverted=False,
         ),
         "slope_down": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.05,
+            proportion=0.075,
             slope_range=(0.0, 0.35),
             platform_width=2.0,
             border_width=0.25,
             inverted=True,
-        ),
-        "boxes": terrain_gen.BoxRandomGridTerrainCfg(
-            proportion=0.05,
-            grid_width=0.40,
-            grid_height_range=(0.0, 0.15),
-            platform_width=2.0,
-            border_width=0.25,
-            merge_similar_heights=True,
         ),
     },
     add_lights=True,
@@ -683,7 +601,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     scene=SceneCfg(
       terrain=TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=replace( GEOLOCO_TERRAINS_CFG,# GEOLOCO_TERRAINS_CFGNAVIGATION_TERRAINS_CFG
+        terrain_generator=replace( NAVIGATION_TERRAINS_CFG,# GEOLOCO_TERRAINS_CFGNAVIGATION_TERRAINS_CFG
                                   curriculum=True,),
         max_init_terrain_level=5,
       ),

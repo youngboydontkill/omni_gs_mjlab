@@ -43,22 +43,40 @@ def _position_actuator(
   )
 
 
-# S45 uses the S54 position-control gains and its own XML effort/armature values.
+#CSP config
+# _ACTUATOR_PARAMS = (
+#   ("leg_[lr]1_joint", 100.0, 4.0, 180.0, 0.12),
+#   ("leg_[lr]2_joint", 100.0, 4.0, 100.0, 0.0508),
+#   ("leg_[lr]3_joint", 100.0, 4.0, 100.0, 0.0508),
+#   ("leg_[lr]4_joint", 150.0, 8.0, 180.0, 0.12),
+#   ("leg_[lr]5_joint", 40.0, 4, 72.0, 0.05),
+#   ("leg_[lr]6_joint", 40.0, 4, 36.0, 0.05),
+#   ("zarm_[lr]1_joint", 30.0, 3.0, 100.0, 0.05),
+#   ("zarm_[lr]2_joint", 30.0, 3.0, 50.0, 0.05),
+#   ("zarm_[lr]3_joint", 30.0, 3.0, 36.0, 0.05),
+#   ("zarm_[lr]4_joint", 20.0, 3.0, 50.0, 0.05),
+#   ("zarm_[lr]5_joint", 10.0, 3.0, 12.0, 0.05),
+#   ("zarm_[lr]6_joint", 10.0, 3.0, 12.0, 0.05),
+#   ("zarm_[lr]7_joint", 10.0, 3.0, 12.0, 0.05),
+# )
+
+#CST config
 _ACTUATOR_PARAMS = (
-  ("leg_[lr]1_joint", 100.0, 4.0, 180.0, 0.12),
-  ("leg_[lr]2_joint", 100.0, 4.0, 100.0, 0.0508),
-  ("leg_[lr]3_joint", 100.0, 4.0, 100.0, 0.0508),
-  ("leg_[lr]4_joint", 150.0, 8.0, 180.0, 0.12),
-  ("leg_[lr]5_joint", 40.0, 4, 72.0, 0.05),
-  ("leg_[lr]6_joint", 40.0, 4, 36.0, 0.05),
-  ("zarm_[lr]1_joint", 30.0, 3.0, 100.0, 0.05),
-  ("zarm_[lr]2_joint", 30.0, 3.0, 50.0, 0.05),
-  ("zarm_[lr]3_joint", 30.0, 3.0, 36.0, 0.05),
-  ("zarm_[lr]4_joint", 20.0, 3.0, 50.0, 0.05),
-  ("zarm_[lr]5_joint", 10.0, 3.0, 12.0, 0.05),
-  ("zarm_[lr]6_joint", 10.0, 3.0, 12.0, 0.05),
-  ("zarm_[lr]7_joint", 10.0, 3.0, 12.0, 0.05),
+  ("leg_[lr]1_joint", 35.0, 4.0, 180.0, 0.12),
+  ("leg_[lr]2_joint", 35.0, 4.0, 100.0, 0.0508),
+  ("leg_[lr]3_joint", 60.0, 5.0, 100.0, 0.0508),
+  ("leg_[lr]4_joint", 100.0, 6.0, 180.0, 0.12),
+  ("leg_[lr]5_joint", 8.0, 3, 72.0, 0.05),
+  ("leg_[lr]6_joint", 8.0, 3, 36.0, 0.05),
+  ("zarm_[lr]1_joint", 15.0, 3.0, 100.0, 0.05),
+  ("zarm_[lr]2_joint", 15.0, 3.0, 50.0, 0.05),
+  ("zarm_[lr]3_joint", 15.0, 3.0, 36.0, 0.05),
+  ("zarm_[lr]4_joint", 15.0, 3.0, 50.0, 0.05),
+  ("zarm_[lr]5_joint", 15.0, 3.0, 12.0, 0.05),
+  ("zarm_[lr]6_joint", 15.0, 3.0, 12.0, 0.05),
+  ("zarm_[lr]7_joint", 15.0, 3.0, 12.0, 0.05),
 )
+
 
 KUAVO_S45_ACTUATORS = tuple(
   _position_actuator(
@@ -108,9 +126,7 @@ for actuator in KUAVO_S45_ARTICULATION.actuators:
   assert isinstance(actuator, BuiltinPositionActuatorCfg)
   assert actuator.effort_limit is not None
   for name_expr in actuator.target_names_expr:
-    KUAVO_S45_ACTION_SCALE[name_expr] = (
-      0.25 * actuator.effort_limit / actuator.stiffness
-    )
+    KUAVO_S45_ACTION_SCALE[name_expr] = 0.25
 
 
 if __name__ == "__main__":
