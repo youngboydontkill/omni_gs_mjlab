@@ -45,19 +45,19 @@ def _position_actuator(
 
 # S45 uses the S54 position-control gains and its own XML effort/armature values.
 _ACTUATOR_PARAMS = (
-  ("leg_[lr]1_joint", 60.0, 6.0, 180.0, 0.12),
-  ("leg_[lr]2_joint", 60.0, 6.0, 100.0, 0.0508),
-  ("leg_[lr]3_joint", 80.0, 6.0, 100.0, 0.0508),
-  ("leg_[lr]4_joint", 95.0, 6.0, 180.0, 0.12),
-  ("leg_[lr]5_joint", 55.0, 7.5, 36.0, 0.05),
-  ("leg_[lr]6_joint", 55.0, 7.5, 36.0, 0.05),
-  ("zarm_[lr]1_joint", 20.0, 3.0, 100.0, 0.05),
-  ("zarm_[lr]2_joint", 20.0, 3.0, 50.0, 0.05),
-  ("zarm_[lr]3_joint", 20.0, 3.0, 39.0, 0.05),
+  ("leg_[lr]1_joint", 100.0, 4.0, 180.0, 0.12),
+  ("leg_[lr]2_joint", 100.0, 4.0, 100.0, 0.0508),
+  ("leg_[lr]3_joint", 100.0, 4.0, 100.0, 0.0508),
+  ("leg_[lr]4_joint", 150.0, 8.0, 180.0, 0.12),
+  ("leg_[lr]5_joint", 40.0, 4, 72.0, 0.05),
+  ("leg_[lr]6_joint", 40.0, 4, 36.0, 0.05),
+  ("zarm_[lr]1_joint", 30.0, 3.0, 100.0, 0.05),
+  ("zarm_[lr]2_joint", 30.0, 3.0, 50.0, 0.05),
+  ("zarm_[lr]3_joint", 30.0, 3.0, 36.0, 0.05),
   ("zarm_[lr]4_joint", 20.0, 3.0, 50.0, 0.05),
-  ("zarm_[lr]5_joint", 15.0, 3.0, 12.0, 0.05),
-  ("zarm_[lr]6_joint", 15.0, 3.0, 12.0, 0.05),
-  ("zarm_[lr]7_joint", 15.0, 3.0, 12.0, 0.05),
+  ("zarm_[lr]5_joint", 10.0, 3.0, 12.0, 0.05),
+  ("zarm_[lr]6_joint", 10.0, 3.0, 12.0, 0.05),
+  ("zarm_[lr]7_joint", 10.0, 3.0, 12.0, 0.05),
 )
 
 KUAVO_S45_ACTUATORS = tuple(
@@ -77,9 +77,9 @@ HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   joint_pos={
     "leg_[lr]1_joint": 0.0,
     "leg_[lr]2_joint": 0.0,
-    "leg_[lr]3_joint": -0.4,
-    "leg_[lr]4_joint": 0.69,
-    "leg_[lr]5_joint": -0.33,
+    "leg_[lr]3_joint": -0.27,
+    "leg_[lr]4_joint": 0.52,
+    "leg_[lr]5_joint": -0.3,
     "leg_[lr]6_joint": 0.0,
     "zarm_.*_joint": 0.0,
     "zhead_.*_joint": 0.0,
