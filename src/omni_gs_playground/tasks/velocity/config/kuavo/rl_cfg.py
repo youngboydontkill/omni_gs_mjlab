@@ -128,6 +128,19 @@ def kuavo_s45_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return cfg
 
 
+def kuavo_s45_flat_blind_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the MLP runner configuration for the blind S45 flat task.
+
+  Pure proprioception: ``MLPModel`` (default) consumes only the 1D
+  ``actor`` / ``critic`` observation groups. No depth encoder.
+  """
+  cfg = _kuavo_base_ppo_runner_cfg()
+  # MLPModel is the default class_name — no override needed.
+  # Default obs_groups = {"actor": ("actor",), "critic": ("critic",)}.
+  cfg.experiment_name = "kuavo_s45_flat_blind_velocity"
+  return cfg
+
+
 def kuavo_s45_defm_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create the DeFM runner configuration for the 23-joint S45 rough task.
 

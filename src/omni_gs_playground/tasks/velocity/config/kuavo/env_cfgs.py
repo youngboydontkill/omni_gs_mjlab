@@ -696,6 +696,57 @@ def kuavo_s54_head_cnn_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
   return cfg
 
 
+def kuavo_s45_flat_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Kuavo S45 flat terrain velocity configuration — blind (no depth input).
+
+  Pure proprioception: inherits the full EMP reward set from
+  :func:`kuavo_s45_rough_env_cfg` but strips the depth camera sensor and all
+  depth observation terms. The RL model (:func:`kuavo_s45_flat_blind_ppo_runner_cfg`)
+  uses ``MLPModel`` with only 1D ``actor`` / ``critic`` observation groups.
+
+  Flat terrain overrides match :func:`kuavo_s45_flat_env_cfg`.
+  """
+  cfg = _kuavo_rough_env_cfg(
+    robot_cfg=get_kuavo_s45_robot_cfg(),
+    action_scale=KUAVO_S45_ACTION_SCALE,
+    controlled_joints=S45_CONTROLLED_JOINTS,
+    viewer_body=ROOT_BODY,
+    has_waist=False,
+    depth_camera_parent_body="robot/base_link",
+    depth_camera_pos=(0.168717483101422, 0.0, 0.01355599662743),
+    depth_camera_quat=(0.6408367, 0.29887844, -0.29887844, -0.6408367),
+    play=play,
+  )
+  _apply_s45_emp_rewards(cfg)
+
+  # Blind: strip depth input (sensor + observations).
+  for group in cfg.observations.values():
+    group.terms.pop("depth", None)
+  cfg.scene.sensors = tuple(
+    s for s in (cfg.scene.sensors or ()) if s.name != "depth"
+  )
+
+  # Flat terrain overrides.
+  cfg.sim.njmax = 300
+  cfg.sim.mujoco.ccd_iterations = 50
+  cfg.sim.contact_sensor_maxmatch = 64
+  cfg.sim.nconmax = 128
+
+  assert cfg.scene.terrain is not None
+  cfg.scene.terrain.terrain_type = "plane"
+  cfg.scene.terrain.terrain_generator = None
+  cfg.curriculum.pop("terrain_levels", None)
+
+  if play:
+    twist_cmd = cfg.commands["twist"]
+    assert isinstance(twist_cmd, UniformVelocityCommandCfg)
+    twist_cmd.ranges.lin_vel_x = (-1.0, 1.0)
+    twist_cmd.ranges.lin_vel_y = (-0.5, 0.5)
+    twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
+
+  return cfg
+
+
 def kuavo_s54_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create Kuavo S54 flat terrain velocity configuration."""
   cfg = _kuavo_s54_base_rough_env_cfg(play=play)
@@ -713,7 +764,7 @@ def kuavo_s54_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if play:
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-    twist_cmd.ranges.lin_vel_x = (0.0, 1.0)
+    twist_cmd.ranges.lin_vel_x = (-1.0, 1.0)
     twist_cmd.ranges.lin_vel_y = (-0.5, 0.5)
     twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
 
@@ -727,7 +778,7 @@ def kuavo_s45_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.sim.njmax = 300
   cfg.sim.mujoco.ccd_iterations = 50
   cfg.sim.contact_sensor_maxmatch = 64
-  cfg.sim.nconmax = None
+  cfg.sim.nconmax = 128
 
   assert cfg.scene.terrain is not None
   cfg.scene.terrain.terrain_type = "plane"
@@ -737,7 +788,7 @@ def kuavo_s45_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   if play:
     twist_cmd = cfg.commands["twist"]
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
-    twist_cmd.ranges.lin_vel_x = (0.0, 1.0)
+    twist_cmd.ranges.lin_vel_x = (-1.0, 1.0)
     twist_cmd.ranges.lin_vel_y = (-0.5, 0.5)
     twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
 
