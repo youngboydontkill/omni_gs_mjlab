@@ -14,6 +14,7 @@ from omni_gs_playground.assets.robots.kuavo import (
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
+from mjlab.envs.mdp import dr as mjlab_dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.entity import EntityCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -30,9 +31,7 @@ from mjlab.sensor import (
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 
 from omni_gs_playground.tasks.velocity import mdp
-from omni_gs_playground.tasks.velocity.velocity_env_cfg import (
-  make_kuavo_velocity_env_cfg as make_velocity_env_cfg,
-)
+from omni_gs_playground.tasks.velocity.velocity_env_cfg import make_kuavo_velocity_env_cfg
 
 ROOT_BODY = "base_link"
 FOOT_BODIES = ("leg_l6_link", "leg_r6_link")
@@ -79,7 +78,7 @@ def _kuavo_rough_env_cfg(
   camera mount uses a different pitch (e.g. S45 waist camera at 0.698 rad
   vs. the S54 head camera at ~0.593 rad encoded in the default quat).
   """
-  cfg = make_velocity_env_cfg()
+  cfg = make_kuavo_velocity_env_cfg()
 
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.contact_sensor_maxmatch = 1000
@@ -224,6 +223,18 @@ def _kuavo_rough_env_cfg(
         cfg.scene.terrain.terrain_generator.num_cols = 5
         cfg.scene.terrain.terrain_generator.num_rows = 5
         cfg.scene.terrain.terrain_generator.border_width = 10.0
+
+  # Depth camera extrinsic domain randomization: resample pitch per episode.
+  cfg.events["depth_camera_pitch"] = EventTermCfg(
+    func=mjlab_dr.cam_quat,
+    mode="reset",
+    params={
+      "roll_range": (0.0, 0.0),
+      "pitch_range": (-0.15, 0.15),  # ±~8.6°
+      "yaw_range": (0.0, 0.0),
+      "asset_cfg": SceneEntityCfg("robot", camera_names=("depth",)),
+    },
+  )
 
   return cfg
 
@@ -548,7 +559,7 @@ def _kuavo_s54_base_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     play=play,
   )
 
-
+# 增加时间延迟
 def _separate_depth_observations(
   cfg: ManagerBasedRlEnvCfg,
   *,
@@ -619,27 +630,29 @@ def kuavo_s45_rough_defm_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # table. Scoped to the DeFM task only; the CNN S45-Rough task (which also
   # calls _apply_s45_emp_rewards) is unaffected. Reward-level term, so it stays
   # compatible with the DeFM feature cache (unlike the PPO Symmetry extension).
-  cfg.rewards["leg_amplitude_symmetry"] = RewardTermCfg(
-    func=mdp.bilateral_amplitude_symmetry,
-    weight=-1.0,
-    params={
-      "asset_cfg": _scene_cfg(
-        joint_names=r"leg_[lr][1-6]_joint", preserve_order=True
-      ),
-      "command_name": "twist",
-      "command_threshold": 0.01,
-      "alpha": 0.05,
-    },
-  )
+
+  # cfg.rewards["leg_amplitude_symmetry"] = RewardTermCfg(
+  #   func=mdp.bilateral_amplitude_symmetry,
+  #   weight=-1.0,
+  #   params={
+  #     "asset_cfg": _scene_cfg(
+  #       joint_names=r"leg_[lr][1-6]_joint", preserve_order=True
+  #     ),
+  #     "command_name": "twist",
+  #     "command_threshold": 0.01,
+  #     "alpha": 0.05,
+  #   },
+  # )
+
   # Expose true base linear velocity to the actor (in addition to the gyro-only
   # angular velocity it already sees). DeFM depth features alone are not enough
   # for the policy to recover its own body velocity, and feeding ground-truth
   # base_lin_vel measurably improves velocity tracking on rough terrain. We
   # reuse the critic's term (same robot/BodyVel sensor + ±0.5 m/s noise) so the
   # actor observation matches the privileged signal up to noise corruption.
-  cfg.observations["actor"].terms["base_lin_vel"] = deepcopy(
-    cfg.observations["critic"].terms["base_lin_vel"]
-  )
+  # cfg.observations["actor"].terms["base_lin_vel"] = deepcopy(
+  #   cfg.observations["critic"].terms["base_lin_vel"]
+  # )
   depth_camera = next(
     sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
   )
@@ -725,10 +738,11 @@ def kuavo_s45_flat_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.scene.sensors = tuple(
     s for s in (cfg.scene.sensors or ()) if s.name != "depth"
   )
+  cfg.events.pop("depth_camera_pitch", None)
 
   # Blind task: stack proprioception history (5-frame observation).
-  # for group in cfg.observations.values():
-  #   group.history_length = 5
+  for group in cfg.observations.values():
+    group.history_length = 5
 
   # Flat terrain overrides.
   cfg.sim.njmax = 300
