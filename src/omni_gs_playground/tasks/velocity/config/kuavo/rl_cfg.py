@@ -17,6 +17,18 @@ class RslRlDefmModelCfg(RslRlModelCfg):
   defm_cfg: dict[str, Any] | None = None
 
 
+@dataclass
+class RslRlMoEModelCfg(RslRlModelCfg):
+  """RSL-RL model configuration with Mixture-of-Experts options.
+
+  ``MoEModel`` inherits ``CNNModel`` so it also consumes ``cnn_cfg`` for the
+  depth encoder; ``moe_cfg`` configures the gated expert head that sits between
+  the encoder latent and the policy MLP.
+  """
+
+  moe_cfg: dict[str, Any] | None = None
+
+
 def _kuavo_base_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create the shared MLP runner configuration for Kuavo velocity tasks."""
   return RslRlOnPolicyRunnerCfg(
@@ -124,6 +136,21 @@ def kuavo_s45_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.algorithm.entropy_coef = 5.0e-3
   cfg.actor.distribution_cfg["init_std"] = 0.5
 
+  # 根因修复(2026-07-06 run 复盘,踝 roll 扭动):该 run 的 Policy/mean_std 从
+  # 0.5 单调涨到 1.377 且不收敛(异常发散,见 doc/action_std_in_ppo.md §4/§5.2),
+  # 把高频噪声注入所有 action 维;对 kp=8 的软踝 roll,刚性关节能滤掉的噪声在踝
+  # 上表现为可见扭动。仅降 init_std 上次已证明无效(std 仍涨到 1.377)。切到状态
+  # 相关 std(actor 头输出 mean‖std)后,policy-loss 重新对 std 产生梯度,策略自信时
+  # 主动拉低 std。与 S45-DeFM-Rough 一致(见 kuavo_s45_defm_ppo_runner_cfg 与
+  # doc/action_std_in_ppo.md)。CNNModel 经 MLPModel 路径兼容;导出走 deterministic
+  # mean,ONNX/缓存不受影响。init_std 0.3 进一步压低早期踝噪声(0.3*0.25=0.075 rad
+  # < 踝 roll ±0.262 rad 范围)。
+  # cfg.actor.distribution_cfg["class_name"] = "HeteroscedasticGaussianDistribution"
+  # cfg.actor.distribution_cfg["init_std"] = 0.3
+  # # 截断极端采样:原 clip_actions=None,高 std 下 raw action 可远超关节范围。
+  # # 6.0 对所有关节 offset(scale=0.25 -> ±1.5 rad)都安全,仅作卫生截断。
+  # cfg.clip_actions = 6.0
+
   cfg.experiment_name = "kuavo_s45_velocity"
   return cfg
 
@@ -213,4 +240,57 @@ def kuavo_s54_head_cnn_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
     "critic": ("critic", "critic_depth"),
   }
   cfg.experiment_name = "kuavo_s54_head_cnn_velocity"
+  return cfg
+
+
+def kuavo_s54_head_moe_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the MoE RL runner configuration for the head-controlled S54 task.
+
+  迁移「Hiking in the Wild」§I 的 Mixture-of-Experts 策略（MoE-Loco 风格）：在
+  CNN 深度 encoder 之后插入门控软加权专家头，再进策略 MLP。复用 Head-CNN 任务的
+  env（归一化深度 + actor_depth/critic_depth 分组）与相同 CNN encoder 配置，仅把
+  actor/critic 的 ``class_name`` 换成 ``MoEModel`` 并加 ``moe_cfg``。
+
+  显存：``num_experts`` 个专家 MLP 参数量线性增长、前向 FLOPs ≈ ×num_experts；
+  encoder 不变，rollout 缓存维度不变。默认 4 专家、专家隐层较窄以控参数量。
+  encoder 不共享（``share_cnn_encoders=False``），与 Head-CNN 一致，让 critic 头
+  在其完整特权输入上单独学习。
+  """
+  cnn_cfg = {
+    "output_channels": (16, 32),
+    "kernel_size": (5, 3),
+    "stride": (2, 2),
+    "padding": "zeros",
+    "global_pool": "avg",
+  }
+  moe_cfg = {
+    "num_experts": 4,
+    "expert_hidden_dims": (256,),
+    "gate_hidden_dims": (64,),
+    "moe_output_dim": 256,
+  }
+  cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.actor = RslRlMoEModelCfg(
+    class_name="MoEModel",
+    hidden_dims=cfg.actor.hidden_dims,
+    activation=cfg.actor.activation,
+    obs_normalization=cfg.actor.obs_normalization,
+    distribution_cfg=cfg.actor.distribution_cfg,
+    cnn_cfg=cnn_cfg,
+    moe_cfg=moe_cfg,
+  )
+  cfg.critic = RslRlMoEModelCfg(
+    class_name="MoEModel",
+    hidden_dims=cfg.critic.hidden_dims,
+    activation=cfg.critic.activation,
+    obs_normalization=cfg.critic.obs_normalization,
+    cnn_cfg=cnn_cfg,
+    moe_cfg=moe_cfg,
+  )
+  cfg.algorithm.share_cnn_encoders = False
+  cfg.obs_groups = {
+    "actor": ("actor", "actor_depth"),
+    "critic": ("critic", "critic_depth"),
+  }
+  cfg.experiment_name = "kuavo_s54_head_moe_velocity"
   return cfg
