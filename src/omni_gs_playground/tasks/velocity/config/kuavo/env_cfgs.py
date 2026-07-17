@@ -345,6 +345,33 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     feet_r_forward_scanner,
   )
 
+  # Downward raycast clusters under each foot for the edge-contact penalty
+  # (Hiking in the Wild §III-C, raycast-normal approximation — see
+  # mdp.edge_contact_penalty). A small 3x3 grid (5cm span, 2.5cm resolution)
+  # samples terrain height + normal directly beneath the sole; a foot on a
+  # stair lip / gap shows a large height spread and/or side-face normals.
+  _edge_scanner_kwargs = dict(
+    ray_alignment="yaw",
+    pattern=GridPatternCfg(size=(0.05, 0.05), resolution=0.025),  # 3x3, downward
+    max_distance=1.0,
+    exclude_parent_body=True,
+    debug_vis=False,
+  )
+  feet_l_edge_scanner = RayCastSensorCfg(
+    name="feet_l_edge_scanner",
+    frame=ObjRef(type="body", name=_S45_FEET_NAMES[0], entity="robot"),
+    **_edge_scanner_kwargs,
+  )
+  feet_r_edge_scanner = RayCastSensorCfg(
+    name="feet_r_edge_scanner",
+    frame=ObjRef(type="body", name=_S45_FEET_NAMES[1], entity="robot"),
+    **_edge_scanner_kwargs,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
+    feet_l_edge_scanner,
+    feet_r_edge_scanner,
+  )
+
   # Verify air-time tracking is on for the feet sensor.
   feet_ground = next(
     s for s in cfg.scene.sensors or () if s.name == _S45_FEET_GROUND_SENSOR
@@ -365,7 +392,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
   cfg.rewards["track_angular_velocity"].weight = 3.0
   cfg.rewards["track_linear_velocity"].params["std"] = math.sqrt(0.25)
   cfg.rewards["track_angular_velocity"].params["std"] = math.sqrt(0.25)
-  cfg.rewards["action_rate_l2"].weight = -0.005
+  cfg.rewards["action_rate_l2"].weight = -0.01  # -0.005 -> -0.01(踝 roll 扭动)
   cfg.rewards["body_orientation_l2"].weight = -3.0
   # body_ang_vel (-0.05), joint_acc_l2 (-2.5e-7), joint_pos_limits (-10.0),
   # is_terminated (-200.0), stand_still (-1.0), self_collisions (-1.0) are
@@ -393,11 +420,23 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     ),
     "dof_torques_ankle_l2": RewardTermCfg(
       func=mdp.joint_torques_l2,
-      weight=-1.0e-5,
+      weight=-1.0e-4,  # -1e-5 -> -1e-3:原 reward≈-0.001 形同虚设,让踝 roll 力矩不再零成本
       params={
         "asset_cfg": _scene_cfg(actuator_names=ankle_torque_joints),
       },
     ),
+    # "ankle_roll_vel_l2": RewardTermCfg(
+    #   # 直接惩罚踝 roll 角速度(扭动的最直接代理量)。action_rate_l2 作用于全维
+    #   # raw action、无 asset_cfg,无法 scoped 到踝,故用 joint_vel_l2 + leg_6 专门
+    #   # 约束 roll 角速度。ankle_torque_joints = (r"leg_[lr]6_joint",) 即踝 roll。
+    #   func=mdp.joint_vel_l2,
+    #   weight=-2.0e-2,
+    #   params={
+    #     "asset_cfg": _scene_cfg(
+    #       joint_names=ankle_torque_joints, preserve_order=True
+    #     ),
+    #   },
+    # ),
     "dof_power_l2": RewardTermCfg(
       func=mdp.joint_power_l2,
       weight=-2.0e-5,
@@ -411,7 +450,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     ),
     "action_smoothness_l2": RewardTermCfg(
       func=mdp.action_acc_l2,
-      weight=-0.01,
+      weight=-2.0e-2,  # -0.01 -> -0.02 压高频动作抖动(踝 roll 扭动)
     ),
     "feet_air_time": RewardTermCfg(
       func=mdp.feet_air_time_positive_biped,
@@ -533,14 +572,32 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     ),
     # Penalize a toe approaching / contacting a vertical face (stair riser,
     # wall) via the per-foot forward raycasters added above.
-    "toe_touch": RewardTermCfg(
-      func=mdp.toe_touch,
-      weight=-1.0,
+    # "toe_touch": RewardTermCfg(
+    #   func=mdp.toe_touch,
+    #   weight=-1.0,
+    #   params={
+    #     "sensor_name_l": "feet_l_forward_scanner",
+    #     "sensor_name_r": "feet_r_forward_scanner",
+    #     "feet_length": 0.178,
+    #     "margin": 0.01,
+    #   },
+    # ),
+    # Foothold safety: penalize loading a foot on a terrain edge, scaled by foot
+    # speed (Hiking in the Wild §III-C, raycast-normal approximation via the
+    # downward per-foot edge scanners). Complements toe_touch: toe_touch keeps
+    # the toe off vertical faces, edge_contact keeps the sole centered on flat
+    # ground. Conservative starting weight; not the paper's Warp point-mesh
+    # penalty (mjlab terrain exposes no trimesh — see mdp.edge_contact_penalty).
+    "edge_contact": RewardTermCfg(
+      func=mdp.edge_contact_penalty,
+      weight=-0.5,
       params={
-        "sensor_name_l": "feet_l_forward_scanner",
-        "sensor_name_r": "feet_r_forward_scanner",
-        "feet_length": 0.178,
-        "margin": 0.01,
+        "sensor_name_l": "feet_l_edge_scanner",
+        "sensor_name_r": "feet_r_edge_scanner",
+        "ground_sensor_name": _S45_FEET_GROUND_SENSOR,
+        "asset_cfg": _scene_cfg(body_names=_S45_FEET_NAMES),
+        "height_threshold": 0.03,
+        "normal_threshold": 0.5,
       },
     ),
   })
@@ -571,6 +628,25 @@ def _separate_depth_observations(
   for depth_term in (actor_depth, critic_depth):
     depth_term.params["flatten"] = False
     depth_term.params["normalize"] = normalize
+
+  # 论文「Hiking in the Wild」§III-B2 F_sim 深度退化链：仅对 actor 深度加噪，
+  # critic 走干净米制深度（非对称 actor-critic）。play 分支已把 actor
+  # enable_corruption 置 False（见 _kuavo_rough_env_cfg），此处据此关噪，
+  # 保证回放拿干净深度。保守默认：小 range-gaussian σ + 低概率白区/blur/OOD。
+  # actor_corrupt = bool(cfg.observations["actor"].enable_corruption)
+  # actor_depth.params.update(
+  #   corrupt=actor_corrupt,
+  #   noise_std=0.02,             # 米制 2cm range-dependent 高斯噪声
+  #   noise_range=(0.15, 3.0),    # 仅有效感知带内加噪
+  #   white_prob=0.10,            # 10% 帧出现双目失配白区
+  #   white_max_blocks=2,
+  #   white_block_size=(8, 8),
+  #   blur_prob=0.20,             # 20% 帧运动模糊
+  #   blur_kernel=3,
+  #   blur_sigma=0.8,
+  #   ood_prob=0.005,             # 0.5% 帧整帧失效
+  # )
+  # critic_depth.params.update(corrupt=False)
 
   cfg.observations["actor"].history_length = 5
   cfg.observations["actor"].flatten_history_dim = True

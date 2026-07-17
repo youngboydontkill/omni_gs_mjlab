@@ -239,6 +239,55 @@ GEOLOCO_TERRAINS_CFG = TerrainGeneratorCfg(
     add_lights=True,
 )
 
+TEST_DEPTH_TERRAINS_CFG = TerrainGeneratorCfg(
+  size=(8.0, 8.0),
+  border_width=20.0,
+  num_rows=10,
+  num_cols=10,
+  difficulty_range=(0.0, 1.0),
+  sub_terrains={
+    "flat": flat(proportion=0.4),
+    "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.2,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+    "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.2,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+    # "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+    #   proportion=0.1,
+    #   slope_range=(0.0, 0.5),
+    #   platform_width=2.0,
+    #   border_width=0.25,
+    #   inverted=True,
+    # ),
+    "tilted_grid": terrain_gen.BoxTiltedGridTerrainCfg(
+      proportion=0.1,
+      grid_width=0.75,
+      tilt_range_deg=24.0,
+      height_range=0.35,
+      platform_width=1.2,
+      border_width=0.25,
+      floor_depth=1.5,
+    ),
+    "box_random_grid": terrain_gen.BoxRandomGridTerrainCfg(
+      proportion=0.1,
+      grid_width=0.45,
+      grid_height_range=(0.02, 0.45),
+      platform_width=1.2,
+      border_width=0.25,
+      merge_similar_heights=True,
+    ),
+  },
+  add_lights=True,
+)
 
 def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
   """Create base velocity tracking task configuration."""
@@ -601,7 +650,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     scene=SceneCfg(
       terrain=TerrainEntityCfg(
         terrain_type="generator",
-        terrain_generator=replace( NAVIGATION_TERRAINS_CFG,# GEOLOCO_TERRAINS_CFGNAVIGATION_TERRAINS_CFG
+        terrain_generator=replace( TEST_DEPTH_TERRAINS_CFG,# GEOLOCO_TERRAINS_CFGNAVIGATION_TERRAINS_CFG
                                   curriculum=True,),
         max_init_terrain_level=5,
       ),

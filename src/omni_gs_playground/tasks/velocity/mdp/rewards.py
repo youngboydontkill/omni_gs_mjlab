@@ -910,3 +910,103 @@ def toe_touch(
 
   return _penalty(dist_l) + _penalty(dist_r)
 
+
+def edge_contact_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name_l: str,
+  sensor_name_r: str,
+  ground_sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  height_threshold: float = 0.03,
+  normal_threshold: float = 0.5,
+  eps: float = 1e-3,
+) -> torch.Tensor:
+  """Penalize a foot contacting a terrain edge, weighted by foot speed.
+
+  Adaptation of Hiking in the Wild §III-C (Terrain Edge Contact Penalization).
+  The paper detects mesh edges by dihedral angle and penalizes foot "volume
+  point" penetration via Warp point-mesh distance queries. mjlab terrain has no
+  unified trimesh and exposes no runtime vertex/face arrays or ``wp.Mesh``, so a
+  faithful port is not possible. Instead we approximate "foot is on an edge"
+  from a small **downward** raycast cluster under each foot (attached to
+  ``leg_[lr]6_link``), using two geometric cues:
+
+  1. **Neighbor height discontinuity**: max-min of the cluster's hit ``z``. A
+     foot straddling a stair lip / gap sees a large spread (part of the sole is
+     over a step, part over the drop).
+  2. **Normal deviation**: the fraction of rays whose hit normal deviates from
+     vertical ``+z`` by more than ``normal_threshold`` (``1 - n_z``), i.e. the
+     foot is over a sloped side face rather than a flat top.
+
+  The per-foot ``edge_severity`` combines the two cues, is gated by ground
+  contact (only penalize edges the foot is actually loading), and is scaled by
+  the foot's world linear speed ``(‖v‖ + eps)`` — mirroring the paper's
+  ``r_vol = -Σ‖d_i‖·(‖v_i‖+ε)`` intent that high-speed scraping near edges is
+  worse. Returns a per-env sum over both feet (caller applies a negative
+  weight). This is an approximation, not the paper's Warp point-mesh penalty;
+  it complements :func:`toe_touch` (which guards against kicking vertical faces).
+
+  Args:
+    sensor_name_l / sensor_name_r: per-foot downward RayCastSensor names.
+    ground_sensor_name: feet-ground ContactSensor (found/force per foot).
+    asset_cfg: robot asset; ``body_ids`` (feet bodies) give foot world velocity.
+    height_threshold: cluster ``z`` spread (m) above which an edge is flagged.
+    normal_threshold: ``1 - n_z`` above which a ray is "on a side face".
+    eps: small speed offset for numerical stability (paper's ε).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  raycaster_l: RayCastSensor = env.scene[sensor_name_l]
+  raycaster_r: RayCastSensor = env.scene[sensor_name_r]
+  ground: ContactSensor = env.scene[ground_sensor_name]
+
+  def _severity(rc: RayCastSensor) -> torch.Tensor:
+    dist = rc.data.distances  # [B, N]; -1 marks a miss
+    hit_z = rc.data.hit_pos_w[..., 2]  # [B, N]
+    normals = rc.data.normals_w  # [B, N, 3]
+    valid = dist > 0  # [B, N]
+
+    # Height discontinuity across the cluster (masked min/max over valid rays).
+    z_hi = torch.where(valid, hit_z, hit_z.new_full((), float("-inf")))
+    z_lo = torch.where(valid, hit_z, hit_z.new_full((), float("inf")))
+    z_spread = z_hi.amax(dim=1) - z_lo.amin(dim=1)  # [B]
+    # No valid rays -> spread is -inf/inf artifacts; zero them out.
+    n_valid = valid.sum(dim=1)
+    z_spread = torch.where(n_valid > 0, z_spread, torch.zeros_like(z_spread))
+    z_spread = torch.nan_to_num(z_spread, nan=0.0, posinf=0.0, neginf=0.0)
+    height_cue = (z_spread - height_threshold).clamp(min=0.0)
+
+    # Normal deviation: fraction of valid rays on a non-flat face.
+    dev = (1.0 - normals[..., 2]).clamp(min=0.0)  # [B, N]; 0 when normal is +z
+    on_side = valid & (dev > normal_threshold)
+    normal_cue = on_side.float().sum(dim=1) / n_valid.clamp(min=1).float()  # [B] in [0,1]
+
+    severity = height_cue + normal_cue * height_threshold
+    return torch.nan_to_num(severity, nan=0.0, posinf=0.0, neginf=0.0)  # [B]
+
+  sev_l = _severity(raycaster_l)
+  sev_r = _severity(raycaster_r)
+
+  # Ground contact gate per foot (order: left, right to match feet bodies).
+  if ground.data.force_history is not None:
+    in_contact = (torch.norm(ground.data.force_history, dim=-1) > 1.0).any(dim=-1)  # [B, F]
+  else:
+    assert ground.data.force is not None
+    in_contact = torch.norm(ground.data.force, dim=-1) > 1.0  # [B, F]
+  in_contact = in_contact.float()
+
+  # Foot world speed per foot body.
+  foot_vel = asset.data.body_link_lin_vel_w[:, asset_cfg.body_ids, :]  # [B, F, 3]
+  foot_speed = torch.norm(foot_vel, dim=-1)  # [B, F]
+
+  # Left = index 0, right = index 1 (feet bodies are ordered l, r).
+  num = min(in_contact.shape[1], foot_speed.shape[1])
+  contact_l = in_contact[:, 0] if num > 0 else torch.zeros_like(sev_l)
+  contact_r = in_contact[:, 1] if num > 1 else torch.zeros_like(sev_r)
+  speed_l = foot_speed[:, 0] if num > 0 else torch.zeros_like(sev_l)
+  speed_r = foot_speed[:, 1] if num > 1 else torch.zeros_like(sev_r)
+
+  pen_l = sev_l * contact_l * (speed_l + eps)
+  pen_r = sev_r * contact_r * (speed_r + eps)
+  return pen_l + pen_r
+
+
