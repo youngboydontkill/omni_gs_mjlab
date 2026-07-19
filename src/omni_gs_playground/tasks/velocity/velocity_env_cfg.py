@@ -644,7 +644,7 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
 
   ##
   # Assemble and return
-  ##
+  ##  
 
   return ManagerBasedRlEnvCfg(
     scene=SceneCfg(

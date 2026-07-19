@@ -29,6 +29,20 @@ class RslRlMoEModelCfg(RslRlModelCfg):
   moe_cfg: dict[str, Any] | None = None
 
 
+@dataclass
+class RslRlAmpOnPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
+  """Runner config that carries ``amp_cfg`` at the top level.
+
+  ``RslRlPpoAlgorithmCfg`` does not have an ``amp_cfg`` field, so the config
+  dict produced by ``asdict()`` would strip it.  By hoisting ``amp_cfg`` into
+  the runner-level dataclass, ``asdict()`` preserves it.  The AMP runner
+  (:class:`~omni_gs_playground.tasks.velocity.rl.runner.AMPVelocityOnPolicyRunner`)
+  then injects it into ``cfg["algorithm"]["amp_cfg"]`` before PPO construction.
+  """
+
+  amp_cfg: dict[str, Any] | None = None
+
+
 def _kuavo_base_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create the shared MLP runner configuration for Kuavo velocity tasks."""
   return RslRlOnPolicyRunnerCfg(
@@ -294,3 +308,52 @@ def kuavo_s54_head_moe_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   }
   cfg.experiment_name = "kuavo_s54_head_moe_velocity"
   return cfg
+
+
+def kuavo_s45_amp_ppo_runner_cfg() -> RslRlAmpOnPolicyRunnerCfg:
+  """Create the CNN+AMP runner configuration for the Kuavo S45 rough task.
+
+  Based on :func:`kuavo_s45_ppo_runner_cfg` (CNN encoder, non-shared), with
+  an AMP discriminator that provides a style reward during rollout and is
+  trained against retargeted motion-capture reference sequences.
+
+  AMP is incompatible with DeFM feature caching; the CNN baseline already
+  uses ``share_cnn_encoders=False`` so no extra mitigation is needed.
+  """
+  base = kuavo_s45_ppo_runner_cfg()
+
+  amp_cfg = {
+    "input_dim": 61 * 4,            # STATE_DIM(61) × seq_len(4)
+    "hidden_dims": (256, 256),
+    "activation": "elu",
+    "reward_scale": 1.0,
+    "grad_penalty_coeff": 10.0,
+    "weight_decay": 1.0e-4,
+    "learning_rate": 1.0e-3,
+    "reward_coef": 0.5,             # style ← task reward mixing weight
+    "seq_len": 4,
+    "motion_data_dir": "/home/hitcsc/YX/GMR/motion_data/kuavo_s45_locomotion_pkl/csv",
+    "motion_dt": 1.0 / 30.0,
+  }
+
+  return RslRlAmpOnPolicyRunnerCfg(
+    seed=base.seed,
+    num_steps_per_env=base.num_steps_per_env,
+    max_iterations=base.max_iterations,
+    obs_groups=base.obs_groups,
+    save_interval=base.save_interval,
+    experiment_name="kuavo_s45_amp_velocity",
+    run_name=base.run_name,
+    logger=base.logger,
+    wandb_project=base.wandb_project,
+    wandb_tags=base.wandb_tags,
+    resume=base.resume,
+    load_run=base.load_run,
+    load_checkpoint=base.load_checkpoint,
+    clip_actions=base.clip_actions,
+    upload_model=base.upload_model,
+    actor=base.actor,
+    critic=base.critic,
+    algorithm=base.algorithm,
+    amp_cfg=amp_cfg,
+  )

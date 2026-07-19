@@ -5,7 +5,65 @@
 
 ---
 
-## 2026-07-15（下午）迁移「Hiking in the Wild」· 批次 4：AMP 判别器骨架（默认关闭）
+## 2026-07-19 激活 AMP 训练（Kuavo-S45-AMP-Rough）
+
+**动机**：已有 Kuavo S45 重定向运动数据（`GMR/motion_data/kuavo_s45_locomotion_pkl/csv`，135 个 CSV 文件，30fps），以 Kuavo-S45-Rough（CNN）为基础启用 AMP 风格奖励训练。批次 4 的 scaffold（判别器 + PPO 钩子）从未被任何任务激活，本次打通全链路。
+
+**改动**
+
+1. **新增 `tasks/velocity/amp/` 模块**（4 文件）：
+   - `motion_loader.py`：`MotionDataset` 从 CSV 加载运动数据，逐帧转换 AMP state `s_t = [v(3), ω(3), g(3), q(26), q̇(26)]`（61 维）→ 滑动窗口扁平序列 `[N, 244]`（seq_len=4）。数据验证：10,249 条序列，`range: [-5.3, 7.0]`。
+     - 有限差分求 body-frame v/ω/q̇；CSV 的 28 dof 丢弃 head 两列（列 33-34）取前 26。
+   - `amp_obs.py`：`AMPStateComputer` 从 MuJoCo `EntityData` 实时读取 `root_link_lin_vel_b / root_link_ang_vel_b / projected_gravity_b / joint_pos / joint_vel`。
+   - `env_wrapper.py`：`AMPVecEnvWrapper(RslRlVecEnvWrapper)` 维护 per-env history buffer `[B, seq_len, 61]`，`step()` 注入 `extras["amp_obs"]`（`[B, 244]`）；reset 时 done env 整段填充当前帧。
+   - `__init__.py`：公开导出四类。
+
+2. **修改 `rl_cfg.py`**：
+   - 新增 `RslRlAmpOnPolicyRunnerCfg(RslRlOnPolicyRunnerCfg)`：顶层 `amp_cfg: dict | None = None`，绕过 `RslRlPpoAlgorithmCfg` 无此字段的 `asdict` 瓶颈。
+   - `kuavo_s45_amp_ppo_runner_cfg()`：基于 CNN S45 配置，`share_cnn_encoders=False`（避免与 AMP 互斥）。
+
+     | amp_cfg 字段 | 值 |
+     |---|---|
+     | input_dim | 244（61×4） |
+     | hidden_dims | (256, 256) |
+     | reward_coef | 0.5 |
+     | seq_len | 4 |
+     | motion_data_dir | `/home/hitcsc/YX/GMR/motion_data/kuavo_s45_locomotion_pkl/csv` |
+
+3. **修改 `runner.py`**：新增 `AMPVelocityOnPolicyRunner`：
+   - 从 `train_cfg` 顶层 pop `amp_cfg` → 注入 `train_cfg["algorithm"]["amp_cfg"]`（PPO 接收）。
+   - 从 obs manager 读已解析 joint_ids 构建 `AMPStateComputer`。
+   - 用 `AMPVecEnvWrapper` 重包装 env。
+   - `super().__init__()` 后 attach `AMPSampler(MotionDataset(...))`。
+   - 无 `amp_cfg` 时降级为正常 `VelocityOnPolicyRunner`。
+
+4. **修改 `config/kuavo/__init__.py` + `rl/__init__.py`**：注册 `Kuavo-S45-AMP-Rough` 任务，runner 用新类。
+
+**config 流向**：
+```
+RslRlAmpOnPolicyRunnerCfg.amp_cfg
+  → asdict() → agent_cfg["amp_cfg"] (已验证 ✓)
+  → AMPVelocityOnPolicyRunner pop→注入 algorithm dict
+  → PPO.construct_algorithm → PPO.__init__(amp_cfg=...)
+```
+
+**生效范围**：仅 `Kuavo-S45-AMP-Rough` 新任务启用 AMP；现有 8 个任务行为不变。
+
+**不修改的文件**（复用已有能力）：
+- `scripts/train.py` — 现有 `asdict` + `load_runner_cls` 直接支持
+- `packages/rsl_rl/` — AMP 判别器/PPO 钩子已完成
+- `.venv/` vendored mjlab — 不修改任何 vendored 代码
+
+**显存影响**：AMPDiscriminator (256×256 MLP, input_dim=244) ≈ 0.2M 参数；`amp_obs` 每个 transition 缓存 `[B, 244]`，约 244×4B ×4096 ≈ 4 MB 额外。`MotionDataset` 全量 ~19 MB CPU 内存。
+
+**验证**：
+- ✅ `list_envs --keyword AMP` → `Kuavo-S45-AMP-Rough` 可见
+- ✅ `train.py Kuavo-S45-AMP-Rough --help` → 正常构建
+- ✅ `asdict(load_rl_cfg("Kuavo-S45-AMP-Rough"))` → `amp_cfg` 在 dict 顶层
+- ✅ `MotionDataset` 加载 10,249 条序列，sample(4) → `[4, 244]`
+- ✅ `AMPDiscriminator(device="cpu", input_dim=244)` 构造 + style_reward + discriminator_loss 冒烟
+
+---
 
 **动机**：论文 §III-E 使用 Adversarial Motion Priors 让策略步态更自然。本仓库缺乏 Kuavo 重定向运动数据集，做完整 AMP 训练的前提不成立。本批仅搭**骨架**（判别器 + PPO 集成点 + 文档），由 `amp_cfg=None` 短路，不改变任何现有任务行为。
 
