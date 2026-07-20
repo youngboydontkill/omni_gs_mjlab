@@ -215,6 +215,8 @@ class AMPVelocityOnPolicyRunner(VelocityOnPolicyRunner):
       seq_len = amp_cfg.pop("seq_len", 4)
       motion_data_dir = amp_cfg.pop("motion_data_dir", None)
       motion_dt = amp_cfg.pop("motion_dt", 1.0 / 30.0)
+      include_kw = amp_cfg.pop("include_keywords", None)
+      exclude_kw = amp_cfg.pop("exclude_keywords", None)
 
       clip_actions = train_cfg.get("clip_actions")
       env = AMPVecEnvWrapper(
@@ -241,5 +243,7 @@ class AMPVelocityOnPolicyRunner(VelocityOnPolicyRunner):
         csv_dir=motion_data_dir,
         seq_len=seq_len,
         dt=motion_dt,
+        include_keywords=include_kw,
+        exclude_keywords=exclude_kw,
       )
       self.alg.set_amp_reference_sampler(AMPSampler(dataset))

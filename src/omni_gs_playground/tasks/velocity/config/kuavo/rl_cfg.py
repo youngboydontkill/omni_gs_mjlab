@@ -334,6 +334,9 @@ def kuavo_s45_amp_ppo_runner_cfg() -> RslRlAmpOnPolicyRunnerCfg:
     "seq_len": 4,
     "motion_data_dir": "/home/hitcsc/YX/GMR/motion_data/kuavo_s45_locomotion_pkl/csv",
     "motion_dt": 1.0 / 30.0,
+    # Only stand / walk / run clips — exclude martial-arts upper body clips.
+    "include_keywords": ("stand", "walk", "run", "crouch" ),# "hop", "leap", "skip"
+    "exclude_keywords": ("block", "dodge", "duck", "ready", "bow", "advance", "retreat", "bounce"),
   }
 
   return RslRlAmpOnPolicyRunnerCfg(

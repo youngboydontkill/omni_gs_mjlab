@@ -163,6 +163,21 @@ class MotionDataset:
     The dataset is built eagerly at construction time; typical size is well
     under 100 MB (135 clips × ~150 frames/clip × 244 floats × 4 bytes ≈ 19 MB
     for seq_len=4).
+
+    Parameters
+    ----------
+    csv_dir:
+        Directory containing ``.csv`` motion clips.
+    seq_len:
+        Number of frames per AMP sequence window.
+    dt:
+        Frame interval of the motion data (seconds).
+    include_keywords:
+        Optional list of substrings — only filenames (lowercased) containing
+        **any** of these keywords are loaded.  When ``None`` all files are used.
+    exclude_keywords:
+        Optional list of substrings — filenames (lowercased) containing **any**
+        of these keywords are **skipped**.  Evaluated after ``include_keywords``.
     """
 
     def __init__(
@@ -170,6 +185,8 @@ class MotionDataset:
         csv_dir: str,
         seq_len: int = 4,
         dt: float = 1.0 / 30.0,
+        include_keywords: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
     ) -> None:
         self.seq_len = seq_len
         self.state_dim = _STATE_DIM
@@ -178,6 +195,13 @@ class MotionDataset:
         all_seqs: list[torch.Tensor] = []
         pattern = os.path.join(csv_dir, "*.csv")
         for path in sorted(glob.glob(pattern)):
+            fname = os.path.basename(path).lower()
+            # Exclude first (takes priority).
+            if exclude_keywords and any(kw in fname for kw in exclude_keywords):
+                continue
+            # Include filter: when set, the file must contain at least one keyword.
+            if include_keywords and not any(kw in fname for kw in include_keywords):
+                continue
             states = _csv_to_states(path, dt=dt)
             if states.shape[0] < seq_len:
                 continue

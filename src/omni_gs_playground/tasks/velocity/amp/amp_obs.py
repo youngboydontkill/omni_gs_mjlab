@@ -51,4 +51,8 @@ class AMPStateComputer:
         g = data.projected_gravity_b                            # [B, 3]
         q = data.joint_pos[:, self._joint_ids]                  # [B, 26]
         qdot = data.joint_vel[:, self._joint_ids]              # [B, 26]
-        return torch.cat([v, omega, g, q, qdot], dim=-1)
+        result = torch.cat([v, omega, g, q, qdot], dim=-1)
+        # NanGuard: physics NaN (e.g. MuJoCo solver divergence in rough
+        # terrain) would corrupt the discriminator model and then the actor
+        # critic through AMP style reward + update().  Catch it here.
+        return torch.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
