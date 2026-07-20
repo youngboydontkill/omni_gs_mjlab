@@ -332,11 +332,11 @@ def kuavo_s45_amp_ppo_runner_cfg() -> RslRlAmpOnPolicyRunnerCfg:
     "learning_rate": 1.0e-3,
     "reward_coef": 0.5,             # style ← task reward mixing weight
     "seq_len": 4,
-    "motion_data_dir": "/home/hitcsc/YX/GMR/motion_data/kuavo_s45_locomotion_pkl/csv",
+    "motion_data_dir": "/home/hitcsc/YX/GMR/motion_data/kuavo_s45_locomotion_pkl_v2/csv",
     "motion_dt": 1.0 / 30.0,
-    # Only stand / walk / run clips — exclude martial-arts upper body clips.
-    "include_keywords": ("stand", "walk", "run", "crouch" ),# "hop", "leap", "skip"
-    "exclude_keywords": ("block", "dodge", "duck", "ready", "bow", "advance", "retreat", "bounce"),
+    # Only B4 through B15 (walk / turn) — exclude hop / leap / side_step / crouch.
+    "include_keywords": ("b4", "b5", "b9", "b10", "b11", "b13", "b14", "b15"),
+    "exclude_keywords": (),
   }
 
   return RslRlAmpOnPolicyRunnerCfg(
