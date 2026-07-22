@@ -270,11 +270,101 @@ def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # waist cam 6° too shallow if reused.
     depth_camera_parent_body="robot/base_link",
     depth_camera_pos=(0.168717483101422, 0.0, 0.01355599662743),
-    depth_camera_quat=(0.6408367, 0.29887844, -0.29887844, -0.6408367),
+    depth_camera_quat=(0.6964, 0.1228, -0.1228, -0.6964),  # 70°: (0.6964, 0.1228, -0.1228, -0.6964) 40°: 0.6408367, 0.29887844, -0.29887844, -0.6408367
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
-  _separate_depth_observations(cfg, normalize=False)
+  _separate_depth_observations(cfg, normalize=True)
+  return cfg
+
+def kuavo_s45_simple_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  cfg = _kuavo_rough_env_cfg(play=play)
+  assert cfg.scene.terrain is not None
+  gen = cfg.scene.terrain.terrain_generator
+  assert gen is not None
+  import mjlab.terrains as terrain_gen
+  gen.sub_terrains = {
+    "stairs_up": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.5,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+    "stairs_down": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.5,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+  }
+  gen.curriculum = True
+  return cfg
+
+
+def kuavo_s45_stairs_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Kuavo S45 stairs-only velocity configuration.
+
+  Restricts the terrain generator to just stair terrain types (ascending and
+  descending), sharing all S45 EMP rewards / depth observation / simulation
+  parameters with the full rough config.  Used for training a stairs-specialist
+  teacher policy.
+  """
+  cfg = kuavo_s45_rough_env_cfg(play=play)
+  assert cfg.scene.terrain is not None
+  gen = cfg.scene.terrain.terrain_generator
+  assert gen is not None
+  import mjlab.terrains as terrain_gen
+  gen.sub_terrains = {
+    "stairs_up": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.5,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+    "stairs_down": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.5,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+  }
+  gen.curriculum = True
+  return cfg
+
+
+def kuavo_s45_slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Kuavo S45 slope-only velocity configuration.
+
+  Restricts the terrain generator to just slope terrain types (up and down),
+  sharing all S45 EMP rewards / depth observation / simulation parameters with
+  the full rough config.  Used for training a slope-specialist teacher policy.
+  """
+  cfg = kuavo_s45_rough_env_cfg(play=play)
+  assert cfg.scene.terrain is not None
+  gen = cfg.scene.terrain.terrain_generator
+  assert gen is not None
+  import mjlab.terrains as terrain_gen
+  gen.sub_terrains = {
+    "slope_up": terrain_gen.HfPyramidSlopedTerrainCfg(
+      proportion=0.5,
+      slope_range=(0.0, 0.35),
+      platform_width=2.0,
+      border_width=0.25,
+      inverted=False,
+    ),
+    "slope_down": terrain_gen.HfPyramidSlopedTerrainCfg(
+      proportion=0.5,
+      slope_range=(0.0, 0.35),
+      platform_width=2.0,
+      border_width=0.25,
+      inverted=True,
+    ),
+  }
+  gen.curriculum = True
   return cfg
 
 
@@ -572,34 +662,34 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     ),
     # Penalize a toe approaching / contacting a vertical face (stair riser,
     # wall) via the per-foot forward raycasters added above.
-    # "toe_touch": RewardTermCfg(
-    #   func=mdp.toe_touch,
-    #   weight=-1.0,
-    #   params={
-    #     "sensor_name_l": "feet_l_forward_scanner",
-    #     "sensor_name_r": "feet_r_forward_scanner",
-    #     "feet_length": 0.178,
-    #     "margin": 0.01,
-    #   },
-    # ),
+    "toe_touch": RewardTermCfg(
+      func=mdp.toe_touch,
+      weight=-5.0,
+      params={
+        "sensor_name_l": "feet_l_forward_scanner",
+        "sensor_name_r": "feet_r_forward_scanner",
+        "feet_length": 0.178,
+        "margin": 0.01,
+      },
+    ),
     # Foothold safety: penalize loading a foot on a terrain edge, scaled by foot
     # speed (Hiking in the Wild §III-C, raycast-normal approximation via the
     # downward per-foot edge scanners). Complements toe_touch: toe_touch keeps
     # the toe off vertical faces, edge_contact keeps the sole centered on flat
     # ground. Conservative starting weight; not the paper's Warp point-mesh
     # penalty (mjlab terrain exposes no trimesh — see mdp.edge_contact_penalty).
-    "edge_contact": RewardTermCfg(
-      func=mdp.edge_contact_penalty,
-      weight=-0.5,
-      params={
-        "sensor_name_l": "feet_l_edge_scanner",
-        "sensor_name_r": "feet_r_edge_scanner",
-        "ground_sensor_name": _S45_FEET_GROUND_SENSOR,
-        "asset_cfg": _scene_cfg(body_names=_S45_FEET_NAMES),
-        "height_threshold": 0.03,
-        "normal_threshold": 0.5,
-      },
-    ),
+    # "edge_contact": RewardTermCfg(
+    #   func=mdp.edge_contact_penalty,
+    #   weight=-0.5,
+    #   params={
+    #     "sensor_name_l": "feet_l_edge_scanner",
+    #     "sensor_name_r": "feet_r_edge_scanner",
+    #     "ground_sensor_name": _S45_FEET_GROUND_SENSOR,
+    #     "asset_cfg": _scene_cfg(body_names=_S45_FEET_NAMES),
+    #     "height_threshold": 0.03,
+    #     "normal_threshold": 0.5,
+    #   },
+    # ),
   })
 
 

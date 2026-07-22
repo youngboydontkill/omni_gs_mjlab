@@ -599,10 +599,10 @@ def make_velocity_env_cfg() -> ManagerBasedRlEnvCfg:
     ),
     "stand_still": RewardTermCfg(
       func=mdp.stand_still,
-      weight=-1.0,
+      weight=-4.0,
       params={
         "command_name": "twist",
-        "command_threshold": 0.1,
+        "command_threshold": 0.01,
         "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
       },
     ),
