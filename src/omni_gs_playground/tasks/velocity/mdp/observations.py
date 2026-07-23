@@ -259,3 +259,50 @@ def depth_image_obs(
 
     # 给视觉 encoder policy 用: [num_envs, 1, H, W]
     return depth.unsqueeze(1)
+
+
+def teacher_height_obs(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "terrain_scan",
+    offset: float = 0.0,
+    miss_value: float | None = None,
+) -> torch.Tensor:
+    """Height scan cropped to the 7×9 center-front region expected by the EMP teacher.
+
+    The raw :func:`~mjlab.envs.mdp.observations.height_scan` returns a
+    ``[B, 187]`` tensor from the 11(W) × 17(L) ray grid.  This function crops
+    the center-front portion ``[2:9, 8:17]`` → ``[7, 9]`` → flattens to 63 dims,
+    matching the teacher's ``height_scan_clip`` preprocessing
+    (see ``doc/emp-teacher-model.md`` §4.2).
+
+    No scaling or normalisation is applied — the teacher's
+    :class:`~rsl_rl.modules.PolicyHeightMapCNN` expects raw metric heights and
+    performs its own per-sample min-subtraction internally.
+
+    Args:
+        env: The RL environment.
+        sensor_name: Name of the ``RayCastSensor`` (default ``"terrain_scan"``).
+        offset: Height offset subtracted from each ray (default ``0.0``; teacher
+            was trained with ``offset=0.5``).
+        miss_value: Value to use for missed rays.  ``None`` uses the sensor's
+            ``max_distance`` (same as the base :func:`height_scan`).
+
+    Returns:
+        ``[B, 63]`` cropped height scan.
+    """
+    from mjlab.envs.mdp.observations import height_scan as _raw_height_scan
+
+    # Get raw scan WITHOUT offset so we can exactly match Isaac Lab's order:
+    #   raw → crop → NaN→0.83, Inf→1.378 → subtract offset.
+    heights = _raw_height_scan(env, sensor_name, offset=0.0, miss_value=miss_value)  # [B, 187]
+    h = heights.view(-1, 11, 17)  # [B, 11(W), 17(L)]
+    h = h[:, 2:9, 8:17]           # crop center-front → [B, 7, 9]
+
+    # Match Isaac Lab's height_scan_no_nan_clip preprocessing:
+    # replace NaN/Inf BEFORE offset subtraction, otherwise stray NaN/Inf
+    # values break the CNN's per-sample min-subtraction.
+    h = torch.where(torch.isnan(h), h.new_full((), 0.83), h)
+    h = torch.where(torch.isinf(h), h.new_full((), 1.378), h)
+    h = h - offset
+
+    return h.reshape(-1, 63)      # [B, 63]

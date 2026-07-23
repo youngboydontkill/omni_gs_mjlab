@@ -18,7 +18,7 @@ from mjlab.envs.mdp import dr as mjlab_dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.entity import EntityCfg
 from mjlab.managers.event_manager import EventTermCfg
-from mjlab.managers.observation_manager import ObservationGroupCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
@@ -270,7 +270,7 @@ def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # waist cam 6° too shallow if reused.
     depth_camera_parent_body="robot/base_link",
     depth_camera_pos=(0.168717483101422, 0.0, 0.01355599662743),
-    depth_camera_quat=(0.6964, 0.1228, -0.1228, -0.6964),  # 70°: (0.6964, 0.1228, -0.1228, -0.6964) 40°: 0.6408367, 0.29887844, -0.29887844, -0.6408367
+    depth_camera_quat=(0.6408367, 0.29887844, -0.29887844, -0.6408367),  # 70°: (0.6964, 0.1228, -0.1228, -0.6964) 40°: 0.6408367, 0.29887844, -0.29887844, -0.6408367
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
@@ -510,7 +510,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     ),
     "dof_torques_ankle_l2": RewardTermCfg(
       func=mdp.joint_torques_l2,
-      weight=-1.0e-4,  # -1e-5 -> -1e-3:原 reward≈-0.001 形同虚设,让踝 roll 力矩不再零成本
+      weight=-1.0e-4,  # -1e-5 -> -1e-4: prevent ankle-roll torque from being free.
       params={
         "asset_cfg": _scene_cfg(actuator_names=ankle_torque_joints),
       },
@@ -571,11 +571,12 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
         "asset_cfg": _scene_cfg(),
       },
     ),
-    # P1: 3.0 -> 1.0. Arms are 14/26 DoF; at 3.0 this term alone paid ~1.4/step
-    # without requiring any walking, anchoring the static "stand still" optimum.
+    # Arms are 14/26 DoF; at 3.0 this term alone paid ~1.4/step without
+    # requiring any walking, anchoring the static "stand still" optimum.
+    # Keep it as a posture prior, not the dominant task signal.
     "track_default_arm_pos": RewardTermCfg(
       func=mdp.track_default_arm_pos,
-      weight=3.0,
+      weight=1.0,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
         "alpha": 5.0,
@@ -975,5 +976,98 @@ def kuavo_s45_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     twist_cmd.ranges.lin_vel_x = (-1.0, 1.0)
     twist_cmd.ranges.lin_vel_y = (-0.5, 0.5)
     twist_cmd.ranges.ang_vel_z = (-0.5, 0.5)
+
+  return cfg
+
+
+def kuavo_s45_rough_distill_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create Kuavo S45 rough terrain configuration for teacher-student distillation.
+
+  Builds on :func:`kuavo_s45_rough_env_cfg` (EMP rewards + depth camera + CNN
+  encoder for the student) and adds the ``terrain_scan`` ray-cast sensor plus
+  three teacher-specific observation groups consumed by the frozen EMP teacher.
+
+  Teacher observation groups (no corruption, no noise):
+
+  * ``teacher_proprio`` — 5-frame history of 5 proprioceptive terms (84 dims
+    per frame → 420 dims) matching the teacher's ``policy_obs`` input.
+  * ``teacher_cmd`` — current velocity command ``[B, 3]``.
+  * ``teacher_height`` — cropped 7×9 height scan ``[B, 63]``.
+
+  The student continues to use the original ``actor`` / ``actor_depth`` groups
+  (depth camera + CNN encoder, unchanged from S45-Rough).
+  """
+  cfg = kuavo_s45_rough_env_cfg(play=play)
+
+  # --- Re-add the terrain_scan sensor (removed by make_kuavo_velocity_env_cfg) ---
+  terrain_scan = RayCastSensorCfg(
+    name="terrain_scan",
+    frame=ObjRef(type="body", name="base_link", entity="robot"),
+    ray_alignment="yaw",
+    pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.1),
+    max_distance=5.0,
+    exclude_parent_body=True,
+    # Isaac Lab's EMP RayCaster intersects only /World/ground. Limit this
+    # individual height-scan query to terrain group 0. Parent-body exclusion
+    # only excludes base_link and is not a terrain-only filtering mechanism.
+    include_geom_groups=(0,),
+    debug_vis=True,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (terrain_scan,)
+
+  # --- Teacher observation groups ---
+
+  # 1) teacher_proprio: 5-frame history of 84-dim per-frame proprioception.
+  teacher_proprio_terms = {
+    key: deepcopy(cfg.observations["actor"].terms[key])
+    for key in ("base_ang_vel", "projected_gravity", "joint_pos", "joint_vel", "actions")
+  }
+  for term in teacher_proprio_terms.values():
+    term.noise = None
+  cfg.observations["teacher_proprio"] = ObservationGroupCfg(
+    terms=teacher_proprio_terms,
+    concatenate_terms=True,
+    enable_corruption=False,
+    history_length=5,
+    flatten_history_dim=True,
+  )
+
+  # 2) teacher_cmd: current command.
+  teacher_cmd_term = deepcopy(cfg.observations["actor"].terms["command"])
+  teacher_cmd_term.noise = None
+  cfg.observations["teacher_cmd"] = ObservationGroupCfg(
+    terms={"command": teacher_cmd_term},
+    concatenate_terms=True,
+    enable_corruption=False,
+    history_length=1,
+  )
+
+  # 3) teacher_height: cropped 63-dim height scan matching Isaac Lab's
+  # height_scan_no_nan_clip preprocessing, including its final [-1, 1] clip.
+  cfg.observations["teacher_height"] = ObservationGroupCfg(
+    terms={"height_scan": ObservationTermCfg(
+      func=mdp.teacher_height_obs,
+      params={"sensor_name": "terrain_scan", "offset": 0.5},
+      clip=(-1.0, 1.0),
+      scale=1.0,
+    )},
+    concatenate_terms=True,
+    enable_corruption=False,
+    history_length=1,
+  )
+
+  # --- Restrict command ranges to match EMP teacher training distribution ---
+  #
+  # The frozen EMP teacher (trained on Isaac Lab S46) was trained with:
+  #   vx ∈ [0.0, 1.0],  vy = 0.0,  wz ∈ [-0.8, 0.8]
+  # Non-zero vy or negative vx would be out-of-distribution and cause the
+  # teacher to produce unreasonable actions.
+  twist_cmd = cfg.commands["twist"]
+  assert isinstance(twist_cmd, UniformVelocityCommandCfg)
+  twist_cmd.ranges.lin_vel_x = (0.0, 1.0)
+  twist_cmd.ranges.lin_vel_y = (0.0, 0.0)
+  twist_cmd.ranges.ang_vel_z = (-0.8, 0.8)
+  # Teacher was trained with always moving forward — no standing.
+  twist_cmd.rel_standing_envs = 0.0
 
   return cfg

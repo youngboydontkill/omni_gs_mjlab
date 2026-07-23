@@ -245,3 +245,88 @@ RslRlAmpOnPolicyRunnerCfg.amp_cfg
 - `Episode_Metrics/mean_action_acc`：应从 2.58 显著下降。
 - `Episode_Reward/ankle_roll_vel_l2` / `dof_torques_ankle_l2`：非零、有梯度。
 - `Metrics/twist/error_vel_xy`：后半程不应再反弹。
+
+---
+
+## 2026-07-23 EMP Teacher 可视化链路修复
+
+**现象**：Isaac Lab EMP teacher checkpoint 控制 MJLab 的 Kuavo-S45-Rough-Distill 时，关节目标明显错位，无法稳定控制；修复后 Viser 又在命令滑块初始化阶段触发 AssertionError。
+
+**根因**
+
+1. **关节置换表错误**：MJCF 顺序为 leg_l1..leg_l6、leg_r1..leg_r6、zarm_l1..zarm_l7、zarm_r1..zarm_r7；checkpoint 使用腿/手臂按关节编号交错的 USD 顺序。原实现使用另一套左右交错表，导致 joint_pos、joint_vel、历史 action 和输出 action 都映射到错误关节。
+2. **Normalizer 被覆盖**：build_teacher() 把 checkpoint 的 actor_obs_normalizer._std 全部填成 1.0，破坏训练输入尺度。
+3. **Height scan 预处理不完整**：teacher height 观测缺少 Isaac Lab 的最终 [-1, 1] clip。
+4. **Viser 零范围滑块限制**：训练分布要求 lin_vel_y=(0, 0)，但 Viser 每个速度滑块要求最大值至少为 0.1，导致初始化断言失败。
+
+**改动**
+
+1. emp_modules.py 使用正确映射：
+   mjcf2lab = [0, 6, 12, 19, 1, 7, 13, 20, 2, 8, 14, 21, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25]
+   lab2mjcf = [0, 4, 8, 12, 16, 20, 1, 5, 9, 13, 17, 21, 2, 6, 10, 14, 18, 22, 24, 3, 7, 11, 15, 19, 23, 25]
+   term-major 的三个 130 维历史块分别重排 joint_pos、joint_vel、action，不转换为 frame-major。
+2. build_teacher() 完整保留 checkpoint 的 _mean/_std/_var/count，移除 _std=1.0 和自动覆盖重估 normalizer 的逻辑。
+3. teacher_height 增加 clip=(-1.0, 1.0)，保持 NaN/Inf 替换、裁剪区域和 offset=0.5 与 Isaac Lab 一致。
+4. visualize_teacher.py 在 Viser 创建控件时临时放宽固定零速度轴，创建后恢复真实范围；每个 control step 强制固定轴归零，不改变训练配置或静态推理分布。
+5. emp-teacher-model.md 修正 486 维输入说明为 command + term-major [15, 15, 130, 130, 130] + height scan；新增 test_emp_modules.py 覆盖置换表互逆性和历史关节块重排。
+
+**验证**
+
+- compileall 通过；置换表互逆性通过；checkpoint normalizer 与 .pt 中 actor_obs_normalizer._std 逐元素一致。
+- Kuavo-S45-Rough-Distill CPU headless static rollout 200 步正常结束，无 NaN、shape 或关节索引错误。
+- teacher_height 形状 [1, 63]，范围在 [-1, 1] 内。
+- 真实 ViserServer 可创建 command GUI，创建后 lin_vel_y 仍为 (0, 0)。
+- uv lock --check 和 git diff --check 通过。
+
+---
+
+## 2026-07-23 S45 Distill 训练链路与奖励复核
+
+**结论**：`Kuavo-S45-Rough-Distill` 使用 `Distillation` 的纯行为克隆目标；环境
+reward 仅用于 rollout/episode 日志，不进入 student 的反向传播。因此不能通过修改
+distill task 的 reward 权重直接提高 student 的 imitation loss。奖励权重真正影响的是
+teacher 的 PPO 训练任务 `Kuavo-S45-Rough`，以及蒸馏时用于观察 student 状态分布。
+
+**修复**
+
+1. `EMPTeacherModel` 成功从 checkpoint 构造后标记 `is_loaded`，
+   `Distillation.construct_algorithm()` 将其同步到 `teacher_loaded`。此前 runner 会把已
+   加载的 teacher 误判为未加载，并在 `learn()` 前拒绝运行。
+2. distillation rollout 默认使用 student 的确定性 mean action。纯 MSE student 在初期
+   采样 `std=0.5` 会迅速偏离 frozen teacher 可恢复的状态分布，得到无效的 teacher
+   target；若要实验带噪 DAgger，可显式设 `student_rollout_stochastic=True`。
+3. 梯度累积按实际累积 batch 数求均值，并优化最后不足 `gradient_length` 的窗口；原实现
+   对 15 个 MSE 求和后直接反传，等效放大梯度约 15 倍，且会丢弃尾部 batch。
+4. S45 EMP reward 的 `track_default_arm_pos` 从 `+3.0` 修正为 `+1.0`。14 个手臂
+   DoF 下 `+3.0` 的稳定姿态回报足以压过移动探索，且与已有 P1 复盘的目标值不一致。
+   速度跟踪（linear `+8.0`、angular `+3.0`）、姿态/接触/足端安全成本保持不变。
+   当前实际踝力矩成本是 `dof_torques_ankle_l2=-1e-4`；较早日志中的 `-1e-3` 是未
+   落地的调参目标，不应作为当前训练配置引用。
+
+**验证重点**：`Loss/behavior` 应稳定下降；rollout 的 `Metrics/twist/error_vel_xy` 和
+终止率不应因初期随机 action 激增。由于 reward 不参与 BC loss，
+`Episode_Reward/*` 只用于确认 student 没有漂离安全状态，不能作为 student 收敛主指标。
+
+**实际验证**
+
+- `Kuavo-S45-Rough-Distill` 已通过任务注册、CLI help、runner 构造和 CPU 1 iteration
+  smoke test（1 env × 24 steps）：teacher checkpoint 被识别为已加载，行为克隆 update
+  正常完成，首轮 `Mean behavior loss=1.3505`，日志和 checkpoint 保存后正常退出。
+- distillation 单测覆盖 loss 下降、teacher 参数冻结、整窗口及尾部窗口的梯度累积；
+  `compileall`、`uv lock --check` 与 `git diff --check` 均通过。
+
+---
+
+## 2026-07-23 S45 Teacher Height Scan 仅地形命中
+
+Isaac Lab 的 EMP `height_scanner` 显式只 raycast `/World/ground`。MJLab 原
+`terrain_scan` 使用默认 `(0, 1, 2)` geom group，且 `exclude_parent_body=True`
+仅排除挂载点 `base_link`，不会排除同一机器人的腿、脚和手臂；S45 robot mesh 全在
+group 1，存在 height scan 命中自身的风险。
+
+`Kuavo-S45-Rough-Distill` 的 teacher `terrain_scan` 现设置
+`include_geom_groups=(0,)`。该过滤参数直接传入此传感器的 ray query；即使
+SensorContext 为深度相机等其他传感器构建的 BVH 使用更宽的 group 并集，height scan
+仍只接受 group 0 的交点。运行时读取 `terrain_scan._ray_geomid` 验证，所有有效命中
+均为 `terrain_*` geom，所属 body 为 `terrain`，没有机器人命中。保留原有 base 挂载、
+yaw 对齐、17×11 射线网格与 7×9 前方裁剪；深度相机和足端 raycast 不受影响。

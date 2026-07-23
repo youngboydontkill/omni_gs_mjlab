@@ -360,3 +360,68 @@ def kuavo_s45_amp_ppo_runner_cfg() -> RslRlAmpOnPolicyRunnerCfg:
     algorithm=base.algorithm,
     amp_cfg=amp_cfg,
   )
+
+
+def kuavo_s45_distill_ppo_runner_cfg() -> dict:
+  """Create the distillation runner configuration for the S45 rough task.
+
+  This config uses the :class:`~rsl_rl.algorithms.Distillation` algorithm with:
+
+  * **Student**: ``CNNModel`` (same as :func:`kuavo_s45_ppo_runner_cfg`).
+    ``obs_groups = ("actor", "actor_depth")`` — depth camera + proprioception.
+  * **Teacher**: ``EMPTeacherModel`` — frozen ``ActorCriticCNN`` loaded from
+    ``doc/model_48350.pt``.  ``obs_groups = ("teacher_cmd", "teacher_proprio",
+    "teacher_height")`` — command + 5-frame proprio history + height scan.
+
+  The config is returned as a plain dict because the Distillation algorithm's
+  ``construct_algorithm()`` expects ``"student"`` / ``"teacher"`` keys rather
+  than the PPO ``"actor"`` / ``"critic"`` keys enforced by
+  :class:`~mjlab.rl.RslRlOnPolicyRunnerCfg`.
+  """
+  cnn_cfg = {
+    "output_channels": (16, 32),
+    "kernel_size": (5, 3),
+    "stride": (2, 2),
+    "padding": "zeros",
+    "global_pool": "avg",
+  }
+
+  return {
+    "student": {
+      "class_name": "CNNModel",
+      "hidden_dims": (512, 256, 128),
+      "activation": "elu",
+      "obs_normalization": True,
+      "distribution_cfg": {
+        "class_name": "GaussianDistribution",
+        "init_std": 0.5,
+        "std_type": "scalar",
+      },
+      "cnn_cfg": cnn_cfg,
+    },
+    "teacher": {
+      "class_name": "EMPTeacherModel",
+      "checkpoint_path": "doc/model_48350.pt",
+    },
+    "algorithm": {
+      "class_name": "Distillation",
+      "num_learning_epochs": 5,
+      "gradient_length": 15,
+      "learning_rate": 1.0e-3,
+      "max_grad_norm": 1.0,
+      "loss_type": "mse",
+      # Keep rollouts on the deploy-time mean action. The environment state
+      # distribution must remain close to the frozen teacher for BC targets to
+      # be meaningful.
+      "student_rollout_stochastic": False,
+    },
+    "obs_groups": {
+      "student": ("actor", "actor_depth"),
+      "teacher": ("teacher_cmd", "teacher_proprio", "teacher_height"),
+    },
+    "num_steps_per_env": 24,
+    "max_iterations": 24001,
+    "save_interval": 1000,
+    "experiment_name": "kuavo_s45_distill_velocity",
+    "seed": 42,
+  }

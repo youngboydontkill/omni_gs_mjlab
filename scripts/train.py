@@ -3,10 +3,11 @@
 import logging
 import os
 import sys
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal
 
 import tyro
 
@@ -23,7 +24,7 @@ from mjlab.utils.wrappers import VideoRecorder
 @dataclass(frozen=True)
 class TrainConfig:
   env: ManagerBasedRlEnvCfg
-  agent: RslRlBaseRunnerCfg
+  agent: RslRlBaseRunnerCfg | dict[str, Any]
   motion_file: str | None = None
   video: bool = False
   video_length: int = 200
@@ -39,11 +40,21 @@ class TrainConfig:
     return TrainConfig(env=env_cfg, agent=agent_cfg)
 
 
+def _agent_get(agent: RslRlBaseRunnerCfg | dict[str, Any], key: str, default: Any = None) -> Any:
+  """Read a runner setting from either the usual dataclass or a dict config."""
+  return agent.get(key, default) if isinstance(agent, dict) else getattr(agent, key, default)
+
+
+def _agent_to_dict(agent: RslRlBaseRunnerCfg | dict[str, Any]) -> dict[str, Any]:
+  """Serialize a runner config without mutating nested distillation settings."""
+  return deepcopy(agent) if isinstance(agent, dict) else asdict(agent)
+
+
 def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
   if cuda_visible == "":
     device = "cpu"
-    seed = cfg.agent.seed
+    seed = _agent_get(cfg.agent, "seed")
     rank = 0
   else:
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
@@ -52,11 +63,14 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     os.environ["MUJOCO_EGL_DEVICE_ID"] = str(local_rank)
     device = f"cuda:{local_rank}"
     # Set seed to have diversity in different processes.
-    seed = cfg.agent.seed + local_rank
+    seed = _agent_get(cfg.agent, "seed") + local_rank
 
   configure_torch_backends()
 
-  cfg.agent.seed = seed
+  if isinstance(cfg.agent, dict):
+    cfg.agent["seed"] = seed
+  else:
+    cfg.agent.seed = seed
   cfg.env.seed = seed
 
   print(f"[INFO] Training with: device={device}, seed={seed}, rank={rank}")
@@ -96,10 +110,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
 
   resume_path: Path | None = None
-  if cfg.agent.resume:
+  if _agent_get(cfg.agent, "resume", False):
       # Load checkpoint from local filesystem.
       resume_path = get_checkpoint_path(
-        log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint
+        log_root_path,
+        _agent_get(cfg.agent, "load_run"),
+        _agent_get(cfg.agent, "load_checkpoint"),
       )
 
   # Only record videos on rank 0 to avoid multiple workers writing to the same files.
@@ -113,9 +129,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     )
     print("[INFO] Recording videos during training.")
 
-  env = RslRlVecEnvWrapper(env, clip_actions=cfg.agent.clip_actions)
+  env = RslRlVecEnvWrapper(env, clip_actions=_agent_get(cfg.agent, "clip_actions"))
 
-  agent_cfg = asdict(cfg.agent)
+  agent_cfg = _agent_to_dict(cfg.agent)
   env_cfg = asdict(cfg.env)
 
   runner_cls = load_runner_cls(task_id)
@@ -136,7 +152,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
 
   runner.learn(
-    num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
+    num_learning_iterations=_agent_get(cfg.agent, "max_iterations"), init_at_random_ep_len=True
   )
 
   env.close()
@@ -146,11 +162,12 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
   args = args or TrainConfig.from_task(task_id)
 
   # Create log directory once before launching workers.
-  log_root_path = Path("logs") / "rsl_rl" / args.agent.experiment_name
+  log_root_path = Path("logs") / "rsl_rl" / _agent_get(args.agent, "experiment_name")
   log_root_path.resolve()
   log_dir_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-  if args.agent.run_name:
-    log_dir_name += f"_{args.agent.run_name}"
+  run_name = _agent_get(args.agent, "run_name", "")
+  if run_name:
+    log_dir_name += f"_{run_name}"
   log_dir = log_root_path / log_dir_name
 
   # Select GPUs based on CUDA_VISIBLE_DEVICES and user specification.

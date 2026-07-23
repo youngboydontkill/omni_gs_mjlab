@@ -43,38 +43,25 @@ def _position_actuator(
   )
 
 
-#CSP config
-# _ACTUATOR_PARAMS = (
-#   ("leg_[lr]1_joint", 100.0, 4.0, 180.0, 0.12),
-#   ("leg_[lr]2_joint", 100.0, 4.0, 100.0, 0.0508),
-#   ("leg_[lr]3_joint", 100.0, 4.0, 100.0, 0.0508),
-#   ("leg_[lr]4_joint", 150.0, 8.0, 180.0, 0.12),
-#   ("leg_[lr]5_joint", 40.0, 4, 72.0, 0.05),
-#   ("leg_[lr]6_joint", 40.0, 4, 36.0, 0.05),
-#   ("zarm_[lr]1_joint", 30.0, 3.0, 100.0, 0.05),
-#   ("zarm_[lr]2_joint", 30.0, 3.0, 50.0, 0.05),
-#   ("zarm_[lr]3_joint", 30.0, 3.0, 36.0, 0.05),
-#   ("zarm_[lr]4_joint", 20.0, 3.0, 50.0, 0.05),
-#   ("zarm_[lr]5_joint", 10.0, 3.0, 12.0, 0.05),
-#   ("zarm_[lr]6_joint", 10.0, 3.0, 12.0, 0.05),
-#   ("zarm_[lr]7_joint", 10.0, 3.0, 12.0, 0.05),
-# )
-
-#CST config
+# Teacher policy actuator parameters (from kuavo_s45_distill_ppo_runner_cfg).
+# Matches the physical parameters used to train doc/model_48350.pt:
+#   (name_expr, stiffness, damping, effort_limit, armature, frictionloss)
+# velocity_limit, friction_static, activation_vel, friction_dynamic are not
+# directly supported by BuiltinPositionActuatorCfg / MuJoCo position actuator.
 _ACTUATOR_PARAMS = (
-  ("leg_[lr]1_joint", 35.0, 4.0, 180.0, 0.12),
-  ("leg_[lr]2_joint", 35.0, 4.0, 100.0, 0.0508),
-  ("leg_[lr]3_joint", 60.0, 5.0, 100.0, 0.0508),
-  ("leg_[lr]4_joint", 100.0, 6.0, 180.0, 0.12),
-  ("leg_[lr]5_joint", 8.0, 5, 72.0, 0.05),  # damping 3->5:踝 pitch 加阻尼,加速 roll 振荡收敛(踝 roll 扭动)
-  ("leg_[lr]6_joint", 8.0, 5, 36.0, 0.05),  # damping 3->5:踝 roll 加阻尼,压被动振荡
-  ("zarm_[lr]1_joint", 15.0, 3.0, 100.0, 0.05),
-  ("zarm_[lr]2_joint", 15.0, 3.0, 50.0, 0.05),
-  ("zarm_[lr]3_joint", 15.0, 3.0, 36.0, 0.05),
-  ("zarm_[lr]4_joint", 15.0, 3.0, 50.0, 0.05),
-  ("zarm_[lr]5_joint", 15.0, 3.0, 12.0, 0.05),
-  ("zarm_[lr]6_joint", 15.0, 3.0, 12.0, 0.05),
-  ("zarm_[lr]7_joint", 15.0, 3.0, 12.0, 0.05),
+  ("leg_[lr]1_joint", 100.0, 4.0, 180.0, 0.05),
+  ("leg_[lr]2_joint", 100.0, 4.0, 100.0, 0.025),
+  ("leg_[lr]3_joint", 100.0, 4.0, 100.0, 0.025 ),
+  ("leg_[lr]4_joint", 150.0, 8.0, 180.0, 0.05 ),
+  ("leg_[lr]5_joint", 40.0, 4.0, 72.0, 0.05),
+  ("leg_[lr]6_joint", 40.0, 4.0, 36.0, 0.05),
+  ("zarm_[lr]1_joint", 30.0, 3.0, 100.0, 0.025),
+  ("zarm_[lr]2_joint", 30.0, 3.0, 50.0, 0.02),
+  ("zarm_[lr]3_joint", 30.0, 3.0, 36.0, 0.02),
+  ("zarm_[lr]4_joint", 20.0, 3.0, 50.0, 0.02),
+  ("zarm_[lr]5_joint", 10.0, 3.0, 12.0, 0.01),
+  ("zarm_[lr]6_joint", 10.0, 3.0, 12.0, 0.01),
+  ("zarm_[lr]7_joint", 10.0, 3.0, 12.0, 0.01),
 )
 
 

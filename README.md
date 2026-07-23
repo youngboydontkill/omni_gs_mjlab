@@ -122,3 +122,6 @@ doc/                           项目说明和设计记录
 3. [GaussianRenderer](https://github.com/discoverse-dev/GaussianRenderer/)
 4. MJLab
 5. [RSL-RL](https://github.com/leggedrobotics/rsl_rl)
+
+
+agent.resume=True
