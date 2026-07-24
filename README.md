@@ -124,4 +124,17 @@ doc/                           项目说明和设计记录
 5. [RSL-RL](https://github.com/leggedrobotics/rsl_rl)
 
 
+
+# 蒸馏任务相关指令
+```bash
+uv run python scripts/visualize_teacher.py Kuavo-S45-Rough-Distill --viewer  viser  
+
+
+
+```
+
+# 模型导出测试
+```bash
+uv run python scripts/reexport_onnx.py  logs/rsl_rl/kuavo_s45_velocity/1/model_40000.pt<checkpoint地址>    Kuavo-S45-Rough<任务名>
+```
 agent.resume=True

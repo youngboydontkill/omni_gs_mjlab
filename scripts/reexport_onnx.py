@@ -25,6 +25,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.torch import configure_torch_backends
+from rsl_rl.utils.onnx_export import build_history_interleave_perm
 
 
 def _infer_task_id(exp_name: str) -> str | None:
@@ -103,7 +104,7 @@ def main():
     actor = runner.alg.get_policy()
 
     # Build the same perm the runner uses.
-    perm = runner._build_history_interleave_perm()  # type: ignore[union-attr]
+    perm = build_history_interleave_perm(obs_manager, actor)
 
     offset = 0
     for group in actor.obs_groups:
