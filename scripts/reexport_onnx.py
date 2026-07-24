@@ -25,7 +25,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.torch import configure_torch_backends
-from rsl_rl.utils.onnx_export import build_history_interleave_perm
+from rsl_rl.utils.onnx_export import build_history_interleave_perm, export_policy_to_onnx as _export_onnx
 
 
 def _infer_task_id(exp_name: str) -> str | None:
@@ -194,7 +194,7 @@ def main():
     # Export ONNX to the same directory as the checkpoint.
     export_dir = str(Path(checkpoint_path).parent)
     print(f"Exporting ONNX to: {export_dir}")
-    runner.export_policy_to_onnx(export_dir, filename="policy.onnx", verbose=False)
+    _export_onnx(obs_manager, runner.alg.get_policy(), export_dir, "policy.onnx", verbose=False)
 
     onnx_path = os.path.join(export_dir, "policy.onnx")
     file_size = os.path.getsize(onnx_path)

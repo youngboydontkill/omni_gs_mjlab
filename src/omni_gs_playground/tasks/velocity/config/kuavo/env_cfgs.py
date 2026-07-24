@@ -270,7 +270,7 @@ def kuavo_s45_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # waist cam 6° too shallow if reused.
     depth_camera_parent_body="robot/base_link",
     depth_camera_pos=(0.168717483101422, 0.0, 0.01355599662743),
-    depth_camera_quat=(0.6408367, 0.29887844, -0.29887844, -0.6408367),  # 70°: (0.6964, 0.1228, -0.1228, -0.6964) 40°: 0.6408367, 0.29887844, -0.29887844, -0.6408367
+    depth_camera_quat=(0.6830, 0.1830, -0.1830, -0.6830),  # 70°: (0.6964, 0.1228, -0.1228, -0.6964) 40°: 0.6408367, 0.29887844, -0.29887844, -0.6408367 60°:0.6830, 0.1830, -0.1830, -0.6830
     play=play,
   )
   _apply_s45_emp_rewards(cfg)
@@ -694,6 +694,27 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
   })
 
 
+def _enable_s45_foothold_reward(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Add the terrain-edge signal used for distillation evaluation/fine-tuning.
+
+  In pure BC this term is diagnostic only. The hybrid PPO fine-tuning task uses
+  it as a low-weight complement to ``toe_touch``: toe rays detect stair risers,
+  while the downward clusters detect a loaded sole straddling a terrain edge.
+  """
+  cfg.rewards["edge_contact"] = RewardTermCfg(
+    func=mdp.edge_contact_penalty,
+    weight=-0.5,
+    params={
+      "sensor_name_l": "feet_l_edge_scanner",
+      "sensor_name_r": "feet_r_edge_scanner",
+      "ground_sensor_name": _S45_FEET_GROUND_SENSOR,
+      "asset_cfg": _scene_cfg(body_names=_S45_FEET_NAMES),
+      "height_threshold": 0.03,
+      "normal_threshold": 0.5,
+    },
+  )
+
+
 def _kuavo_s54_base_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the shared Kuavo S54 rough terrain configuration."""
   return _kuavo_rough_env_cfg(
@@ -980,7 +1001,10 @@ def kuavo_s45_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
-def kuavo_s45_rough_distill_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+def kuavo_s45_rough_distill_env_cfg(
+  play: bool = False,
+  adaptive_terrain_curriculum: bool = False,
+) -> ManagerBasedRlEnvCfg:
   """Create Kuavo S45 rough terrain configuration for teacher-student distillation.
 
   Builds on :func:`kuavo_s45_rough_env_cfg` (EMP rewards + depth camera + CNN
@@ -998,6 +1022,14 @@ def kuavo_s45_rough_distill_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   (depth camera + CNN encoder, unchanged from S45-Rough).
   """
   cfg = kuavo_s45_rough_env_cfg(play=play)
+  _enable_s45_foothold_reward(cfg)
+
+  # During scheduled teacher intervention, displacement-based curriculum would
+  # mostly measure the teacher and quickly push an untrained student to hard
+  # terrain. Keep the BC data distribution stationary instead: environments
+  # retain their initially sampled levels. Hybrid PPO fine-tuning opts back in.
+  if not adaptive_terrain_curriculum:
+    cfg.curriculum.pop("terrain_levels", None)
 
   # --- Re-add the terrain_scan sensor (removed by make_kuavo_velocity_env_cfg) ---
   terrain_scan = RayCastSensorCfg(

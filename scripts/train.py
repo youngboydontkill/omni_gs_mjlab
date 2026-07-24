@@ -29,6 +29,7 @@ class TrainConfig:
   video: bool = False
   video_length: int = 200
   video_interval: int = 2000
+  checkpoint_file: str | None = None
   enable_nan_guard: bool = False
   torchrunx_log_dir: str | None = None
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
@@ -110,6 +111,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
 
   resume_path: Path | None = None
+  if cfg.checkpoint_file is not None and _agent_get(cfg.agent, "resume", False):
+    raise ValueError("Use either --checkpoint-file or --agent.resume, not both.")
+  if cfg.checkpoint_file is not None:
+    resume_path = Path(cfg.checkpoint_file).expanduser().resolve()
+    if not resume_path.is_file():
+      raise FileNotFoundError(f"Checkpoint does not exist: {resume_path}")
   if _agent_get(cfg.agent, "resume", False):
       # Load checkpoint from local filesystem.
       resume_path = get_checkpoint_path(

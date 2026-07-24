@@ -1,6 +1,6 @@
 """RL configuration for Kuavo velocity tasks."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from mjlab.rl import (
@@ -409,7 +409,19 @@ def kuavo_s45_distill_ppo_runner_cfg() -> dict:
       "gradient_length": 15,
       "learning_rate": 1.0e-3,
       "max_grad_norm": 1.0,
-      "loss_type": "mse",
+      # Huber is less sensitive to rare recovery-action outliers. Weight the 12
+      # leg joints above the 14 arm joints so the easy arm targets cannot
+      # dominate the foothold-relevant behavior loss.
+      "loss_type": "huber",
+      "action_loss_weights": (1.5,) * 12 + (0.5,) * 14,
+      # Align the student's depth-CNN representation with the frozen teacher's
+      # 64-D height-map latent, not only its final 26-D action.
+      "latent_loss_coef": 0.1,
+      # Per-environment DAgger-style intervention. Start from safe teacher
+      # states and smoothly hand execution to the deploy-time student policy.
+      "teacher_intervention_start": 1.0,
+      "teacher_intervention_end": 0.05,
+      "teacher_intervention_decay_updates": 12000,
       # Keep rollouts on the deploy-time mean action. The environment state
       # distribution must remain close to the frozen teacher for BC targets to
       # be meaningful.
@@ -425,3 +437,37 @@ def kuavo_s45_distill_ppo_runner_cfg() -> dict:
     "experiment_name": "kuavo_s45_distill_velocity",
     "seed": 42,
   }
+
+
+def kuavo_s45_distill_finetune_ppo_runner_cfg() -> dict:
+  """Create hybrid PPO + teacher-BC configuration for reward fine-tuning.
+
+  Load a distillation checkpoint with ``scripts/train.py --checkpoint-file``.
+  PPO initializes the actor from ``student_state_dict``, keeps a fresh critic
+  and optimizer, and decays the frozen-teacher behavior regularizer while task
+  reward learns closed-loop recovery and foothold safety.
+  """
+  cfg = asdict(kuavo_s45_ppo_runner_cfg())
+  cfg["teacher"] = {
+    "class_name": "EMPTeacherModel",
+    "checkpoint_path": "doc/model_48350.pt",
+  }
+  cfg["obs_groups"]["teacher"] = (
+    "teacher_cmd",
+    "teacher_proprio",
+    "teacher_height",
+  )
+  cfg["algorithm"].update({
+    "learning_rate": 3.0e-4,
+    "entropy_coef": 1.0e-3,
+    "behavior_loss_coef_start": 0.2,
+    "behavior_loss_coef_end": 0.02,
+    "behavior_loss_decay_updates": 10000,
+  })
+  # Cross-algorithm loading intentionally keeps this configured PPO std rather
+  # than the untrained 0.5 std stored by deterministic BC.
+  cfg["actor"]["distribution_cfg"]["init_std"] = 0.15
+  cfg["max_iterations"] = 12001
+  cfg["save_interval"] = 500
+  cfg["experiment_name"] = "kuavo_s45_distill_finetune_velocity"
+  return cfg

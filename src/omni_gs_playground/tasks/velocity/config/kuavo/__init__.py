@@ -21,6 +21,7 @@ from .rl_cfg import (
   kuavo_s45_amp_ppo_runner_cfg,
   kuavo_s45_defm_ppo_runner_cfg,
   kuavo_s45_distill_ppo_runner_cfg,
+  kuavo_s45_distill_finetune_ppo_runner_cfg,
   kuavo_s45_flat_blind_ppo_runner_cfg,
   kuavo_s45_ppo_runner_cfg,
   kuavo_s54_flat_ppo_runner_cfg,
@@ -123,4 +124,12 @@ register_mjlab_task(
   play_env_cfg=kuavo_s45_rough_distill_env_cfg(play=True),
   rl_cfg=kuavo_s45_distill_ppo_runner_cfg(),
   runner_cls=DistillationRunner,
+)
+
+register_mjlab_task(
+  task_id="Kuavo-S45-Rough-Distill-Finetune",
+  env_cfg=kuavo_s45_rough_distill_env_cfg(adaptive_terrain_curriculum=True),
+  play_env_cfg=kuavo_s45_rough_distill_env_cfg(play=True),
+  rl_cfg=kuavo_s45_distill_finetune_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
 )

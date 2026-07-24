@@ -5,6 +5,69 @@
 
 ---
 
+## 2026-07-24 Distill/BC 框架与 reward 设计优化
+
+**动机**：对比 `logs/rsl_rl/kuavo_s45_distill_velocity` 与 `logs/rsl_rl/kuavo_s45_velocity/2026-07-22_16-42-01` 后，确认当前 distill 训练存在三个核心现象：`episode_length/mean_reward` 上升快但抖动大、各项 reward 数值看似更好但方差剧烈、play 中 student 没学到 teacher 的落足点控制。进一步分析后发现，问题不在“reward 权重本身”，而在 **纯 action BC 与现有 student reward 目标错位**：reward 只记日志，不进入 distill loss，因此无法直接约束 rough 上的接地/落足恢复行为。
+
+**结论**
+1. distill 阶段本质上是纯 on-policy action BC，当前 reward 不参与反向传播。
+2. `mean_reward` 快涨且抖动大，主要来自 teacher 先验、无 value 平滑、课程/终止项离散冲击。
+3. 只蒸馏 action 不足以学会 teacher 的落足点控制，缺少 terrain/latent 对齐与 teacher 接管衰减。
+4. BC 与现有 student reward 不冲突，但如果不把 reward 重新接入优化，就会长期停留在“动作拟合好、闭环控制弱”的状态。
+
+**改动**
+
+1. `packages/rsl_rl/rsl_rl/algorithms/distillation.py`
+   - teacher 接管改为退火式 DAgger-lite：
+
+     | 字段 | 原值 | 新值 |
+     |---|---|---|
+     | `teacher_intervention_start` | `1.0` | `1.0` |
+     | `teacher_intervention_end` | - | `0.05` |
+     | `teacher_intervention_decay_updates` | - | `12000` |
+
+   - action loss 改为 Huber，降低 teacher/student action 尖峰对 BC 的放大效应。
+   - 增加 joint 加权，优先约束腿部动作，避免手臂/非关键关节稀释落足控制信号。
+   - 增加 latent 蒸馏：teacher height latent 对齐 student visual latent，补齐 terrain 表征。
+
+2. `packages/rsl_rl/rsl_rl/algorithms/ppo.py`
+   - 增加从 distill checkpoint 进入 PPO + BC fine-tune 的桥接路径。
+   - 保留衰减式 teacher action regularizer，让 reward 在 PPO 阶段真正进入优化。
+
+3. `packages/rsl_rl/rsl_rl/storage/rollout_storage.py`
+   - 扩展 rollout 侧缓存字段，支持 distill / fine-tune 的额外监督信号。
+
+4. `packages/rsl_rl/rsl_rl/models/cnn_model.py`
+   - 补齐 student 侧视觉 latent 暴露与辅助蒸馏接口。
+
+5. `packages/rsl_rl/rsl_rl/models/emp_teacher_model.py`
+   - teacher height latent 作为显式蒸馏目标输出。
+
+6. `packages/rsl_rl/rsl_rl/modules/emp_modules.py`
+   - 补齐 latent / auxiliary loss 所需的模块接口。
+
+7. `src/omni_gs_playground/tasks/velocity/config/kuavo/rl_cfg.py`
+   - 增加 distill / fine-tune 相关配置入口。
+
+8. `src/omni_gs_playground/tasks/velocity/config/kuavo/env_cfgs.py`
+   - Distill 阶段默认关闭 terrain curriculum 自适应推进，减少目标漂移。
+   - 新增 `edge_contact` 作为 foothold 安全信号，为后续 PPO fine-tune 提供更直接的落足约束。
+
+9. `src/omni_gs_playground/tasks/velocity/config/kuavo/__init__.py`
+   - 新增 `Kuavo-S45-Rough-Distill-Finetune` 任务注册。
+
+10. `scripts/train.py`
+    - 打通 distill checkpoint 启动与任务参数流转。
+
+**优化方向**
+- distill 阶段：优先学“teacher 的落足策略 + 视觉/地形表征”，而不是只拟合 action 均值。
+- fine-tune 阶段：把 reward 重新变成优化目标，用 PPO 纠正闭环稳定性。
+- reward 设计：让 `edge_contact` 等地形相关信号服务于 PPO，而不是继续停留在日志项。
+
+**验证**
+- 已完成日志对比与根因分析，结论写入 `doc/distill_vs_rough_log_analysis.md`。
+- 本轮未做完整训练回归，后续需补 `train.py --help`、任务注册发现和最小 smoke test。
+
 ## 2026-07-24 注册 Distill play 可视化入口
 
 **动机**：`Kuavo-S45-Rough-Distill` 已有 student checkpoint（`logs/rsl_rl/kuavo_s45_distill_velocity/.../model_15000.pt`），但 `scripts/play.py` 仍按 PPO dataclass 写死 `asdict(agent_cfg)` / `load_cfg={"actor": True}`，无法加载蒸馏 student。
