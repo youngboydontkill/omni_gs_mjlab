@@ -1087,6 +1087,15 @@ def kuavo_s45_rough_distill_env_cfg(
     enable_corruption=False,
     history_length=1,
   )
+  cfg.observations["teacher_height_valid"] = ObservationGroupCfg(
+    terms={"valid": ObservationTermCfg(
+      func=mdp.teacher_height_valid_obs,
+      params={"sensor_name": "terrain_scan"},
+    )},
+    concatenate_terms=True,
+    enable_corruption=False,
+    history_length=1,
+  )
 
   # --- Restrict command ranges to match EMP teacher training distribution ---
   #

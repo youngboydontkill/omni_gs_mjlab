@@ -306,3 +306,19 @@ def teacher_height_obs(
     h = h - offset
 
     return h.reshape(-1, 63)      # [B, 63]
+
+
+def teacher_height_valid_obs(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "terrain_scan",
+) -> torch.Tensor:
+    """Return valid-hit labels for the teacher's cropped 7x9 terrain scan.
+
+    This mask excludes ray misses from the auxiliary reconstruction objective.
+    It is a target-validity mask, not a claim that every valid cell is directly
+    visible in the current monocular depth frame.
+    """
+    sensor = env.scene[sensor_name]
+    valid = sensor.data.distances >= 0
+    valid = valid.view(-1, 11, 17)[:, 2:9, 8:17]
+    return valid.reshape(-1, 63).float()

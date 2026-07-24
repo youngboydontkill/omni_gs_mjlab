@@ -5,6 +5,51 @@
 
 ---
 
+## 2026-07-24 Depth-to-Terrain 辅助蒸馏落地
+
+**动机**：进一步核对观测几何后确认，完整 terrain scan 虽然覆盖身后，但 EMP teacher 实际使用的 `teacher_height` 已裁成前方 `7x9`，不含身后区域。原方案仍有两个问题：teacher height 与 student perspective depth 不是同构观测；两侧 global pooling latent 的直接对齐丢失空间位置，不能有效监督落足点。
+
+**改动**
+
+1. `packages/rsl_rl/rsl_rl/models/cnn_model.py`
+   - 暴露 global pooling 前的 depth CNN 空间特征。
+   - action 与空间辅助特征共用一次 CNN forward，避免辅助训练重复编码 depth。
+2. `packages/rsl_rl/rsl_rl/algorithms/distillation.py`
+   - 新增轻量 terrain decoder，将空间特征重建为 `7x9` 局部高度图。
+   - 新增 masked Smooth L1 height loss 与相邻网格 height-gradient loss。
+   - decoder 纳入 optimizer、梯度裁剪、多 GPU 同步及 checkpoint 保存/恢复。
+   - global latent matching 与 terrain reconstruction 设为互斥，避免两种表征目标同时拉扯 encoder。
+3. `src/omni_gs_playground/tasks/velocity/mdp/observations.py` 与 `env_cfgs.py`
+   - 新增 `teacher_height_valid`，屏蔽 terrain ray miss。
+   - 该标记只表示 target 有效，不冒充严格的 depth camera visibility。
+4. `src/omni_gs_playground/tasks/velocity/config/kuavo/rl_cfg.py`
+
+   | 参数 | 原值 | 新值 |
+   |---|---:|---:|
+   | `latent_loss_coef` | `0.1` | `0.0` |
+   | `terrain_reconstruction_loss_coef` | - | `0.1` |
+   | `terrain_gradient_loss_coef` | - | `0.05` |
+   | `terrain_target_shape` | - | `(7, 9)` |
+
+5. 新增定向测试，覆盖空间特征接口、mask 行为及辅助 loss 对 decoder/depth CNN 的梯度回传。
+6. 新增使用指南 `doc/s45_distillation_training_guide.md`。
+
+**设计边界**
+
+- 本次是 SSR 思路的局部、单帧版本，不重建身后或历史地形。
+- `teacher_height_valid` 不是基于相机内外参和 depth consistency 的 visibility mask。扩展监督范围前，应先实现时序 depth + 位姿补偿 + BEV memory。
+- decoder 只用于训练，不进入 student export，不增加部署推理开销。
+- distill reward 仍只记日志；落足闭环最终由 `Kuavo-S45-Rough-Distill-Finetune` 的 PPO reward 优化。
+
+**验证**
+
+- `uv lock --check` 通过。
+- 修改文件 `compileall` 通过。
+- 小型 TensorDict/CNN distill smoke 成功执行 forward、backward 和 optimizer step，并输出 `behavior`、`terrain_reconstruction`、`terrain_gradient`。
+- 任务发现以及 distill 的 train/play help 通过；新增 loss 参数已出现在 CLI。
+- 真实环境 1 iteration smoke 在设备选择阶段因当前容器无法初始化 NVML/GPU 而停止，尚未进入 MuJoCo 场景或新 loss 路径。
+- 当前环境未安装 `pytest` / `ruff` executable，定向测试文件已补但未通过对应 runner 执行。
+
 ## 2026-07-24 Distill/BC 框架与 reward 设计优化
 
 **动机**：对比 `logs/rsl_rl/kuavo_s45_distill_velocity` 与 `logs/rsl_rl/kuavo_s45_velocity/2026-07-22_16-42-01` 后，确认当前 distill 训练存在三个核心现象：`episode_length/mean_reward` 上升快但抖动大、各项 reward 数值看似更好但方差剧烈、play 中 student 没学到 teacher 的落足点控制。进一步分析后发现，问题不在“reward 权重本身”，而在 **纯 action BC 与现有 student reward 目标错位**：reward 只记日志，不进入 distill loss，因此无法直接约束 rough 上的接地/落足恢复行为。
@@ -28,7 +73,7 @@
 
    - action loss 改为 Huber，降低 teacher/student action 尖峰对 BC 的放大效应。
    - 增加 joint 加权，优先约束腿部动作，避免手臂/非关键关节稀释落足控制信号。
-   - 增加 latent 蒸馏：teacher height latent 对齐 student visual latent，补齐 terrain 表征。
+   - 曾增加 teacher height latent 与 student visual latent 对齐；后续已由上节的空间 terrain reconstruction 取代。
 
 2. `packages/rsl_rl/rsl_rl/algorithms/ppo.py`
    - 增加从 distill checkpoint 进入 PPO + BC fine-tune 的桥接路径。

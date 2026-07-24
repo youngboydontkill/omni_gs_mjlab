@@ -414,9 +414,14 @@ def kuavo_s45_distill_ppo_runner_cfg() -> dict:
       # dominate the foothold-relevant behavior loss.
       "loss_type": "huber",
       "action_loss_weights": (1.5,) * 12 + (0.5,) * 14,
-      # Align the student's depth-CNN representation with the frozen teacher's
-      # 64-D height-map latent, not only its final 26-D action.
-      "latent_loss_coef": 0.1,
+      # The teacher scan and camera depth are not isomorphic views. Keep global
+      # latent matching off and reconstruct the local forward terrain instead.
+      "latent_loss_coef": 0.0,
+      "terrain_reconstruction_loss_coef": 0.1,
+      "terrain_gradient_loss_coef": 0.05,
+      "terrain_target_obs_group": "teacher_height",
+      "terrain_mask_obs_group": "teacher_height_valid",
+      "terrain_target_shape": (7, 9),
       # Per-environment DAgger-style intervention. Start from safe teacher
       # states and smoothly hand execution to the deploy-time student policy.
       "teacher_intervention_start": 1.0,
