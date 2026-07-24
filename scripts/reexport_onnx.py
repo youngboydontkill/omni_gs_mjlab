@@ -79,19 +79,32 @@ def main():
     agent_cfg = load_rl_cfg(task_id)
 
     env_cfg.seed = 42
-    agent_cfg.seed = 42
+
+    # agent_cfg may be a dataclass (PPO tasks) or a dict (distill tasks).
+    if isinstance(agent_cfg, dict):
+        agent_cfg["seed"] = 42
+        agent_dict = agent_cfg
+    else:
+        agent_cfg.seed = 42
+        agent_dict = asdict(agent_cfg)
 
     print("Creating environment...")
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     env = RslRlVecEnvWrapper(env)
 
-    agent_dict = asdict(agent_cfg)
     print("Creating runner...")
     runner_cls = load_runner_cls(task_id)
     runner = runner_cls(env, agent_dict, device=device)
 
     print("Loading checkpoint...")
-    runner.load(checkpoint_path)
+    # For distillation checkpoints, only load the student model (the optimizer
+    # state and teacher weights are not needed for ONNX export).  Skipping the
+    # optimizer avoids param-group mismatches between the freshly constructed
+    # optimizer and the saved one.
+    if isinstance(agent_cfg, dict) and "student" in agent_cfg:
+        runner.load(checkpoint_path, load_cfg={"student": True, "optimizer": False, "iteration": False})
+    else:
+        runner.load(checkpoint_path)
     print("Checkpoint loaded successfully.")
 
     # ---- Verify observation terms & permutation ----
