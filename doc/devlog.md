@@ -5,6 +5,39 @@
 
 ---
 
+## 2026-07-24 注册 Distill play 可视化入口
+
+**动机**：`Kuavo-S45-Rough-Distill` 已有 student checkpoint（`logs/rsl_rl/kuavo_s45_distill_velocity/.../model_15000.pt`），但 `scripts/play.py` 仍按 PPO dataclass 写死 `asdict(agent_cfg)` / `load_cfg={"actor": True}`，无法加载蒸馏 student。
+
+**根因**
+1. 蒸馏任务 `rl_cfg` 是 plain dict（`student` / `teacher` / `Distillation`），不是 `RslRlOnPolicyRunnerCfg`。
+2. distill checkpoint 键为 `student_state_dict` / `teacher_state_dict`，不是 PPO 的 `actor_state_dict`。
+3. play env 保留 `lin_vel_y=(0,0)`，Viser 命令滑块会因零区间触发 AssertionError。
+
+**改动**（`scripts/play.py`）
+- 复用 train 侧 `_agent_get` / `_agent_to_dict`，兼容 dict 与 dataclass runner cfg。
+- 蒸馏任务加载 `student=True`，不强制加载 teacher/optimizer。
+- Viser 路径复用 zero-range command slider 补丁，固定 `lin_vel_y=0`。
+- 训练好的策略缺省要求 `--checkpoint-file`。
+
+**用法**
+```bash
+uv run python scripts/list_envs.py --keyword Rough-Distill
+uv run python scripts/play.py Kuavo-S45-Rough-Distill --help
+uv run python scripts/play.py Kuavo-S45-Rough-Distill \
+  --checkpoint-file logs/rsl_rl/kuavo_s45_distill_velocity/2026-07-23_19-13-10/model_15000.pt \
+  --num-envs 1 --viewer viser
+```
+
+**验证**
+- `list_envs --keyword Rough-Distill` 可见 `Kuavo-S45-Rough-Distill`。
+- `play.py Kuavo-S45-Rough-Distill --help` 正常。
+- CPU headless smoke：构建 DistillationRunner，加载 `model_15000.pt` student，推理 3 步。
+
+**说明**
+- 任务本身此前已注册；本次补的是 play 加载/可视化路径。
+- student 动作为 MJCF 顺序，play 直接用 student 策略，不需要 lab2mjcf 转换。
+
 ## 2026-07-19 激活 AMP 训练（Kuavo-S45-AMP-Rough）
 
 **动机**：已有 Kuavo S45 重定向运动数据（`GMR/motion_data/kuavo_s45_locomotion_pkl/csv`，135 个 CSV 文件，30fps），以 Kuavo-S45-Rough（CNN）为基础启用 AMP 风格奖励训练。批次 4 的 scaffold（判别器 + PPO 钩子）从未被任何任务激活，本次打通全链路。
@@ -330,3 +363,21 @@ SensorContext 为深度相机等其他传感器构建的 BVH 使用更宽的 gro
 仍只接受 group 0 的交点。运行时读取 `terrain_scan._ray_geomid` 验证，所有有效命中
 均为 `terrain_*` geom，所属 body 为 `terrain`，没有机器人命中。保留原有 base 挂载、
 yaw 对齐、17×11 射线网格与 7×9 前方裁剪；深度相机和足端 raycast 不受影响。
+
+---
+
+## 2026-07-23 S45 蒸馏方案调研
+
+当前 Distillation 已是“student 自己 rollout、teacher 在线打标签”的在线 BC，
+但还不是完整 DAgger：没有 teacher 接管衰减、replay 聚合、恢复状态优先采样，也没有
+teacher latent/value 或动作分布监督。`Now You See That` 一类 raw-pixel humanoid
+方法的关键收益来自闭环状态分布和 privileged teacher 表征，而不只是把 MSE 换成另一个
+动作损失。
+
+建议路线为：先做 DAgger-lite（teacher env-mask 接管 + beta 衰减 + replay），再做
+BC warm-start 后 PPO 微调，并将 action BC 作为逐渐减小的正则；确认感知表征成为瓶颈后，
+再蒸馏 teacher height-map CNN/hidden latent。当前不要直接把 reward 加到 BC MSE：reward
+没有 advantage/value 估计时量纲不匹配，不能提供可靠梯度；也不要长期使用高斯 student
+rollout，以免状态分布脱离 teacher。
+
+详细方案、配置建议和评估矩阵见 `doc/distillation_research.md`。

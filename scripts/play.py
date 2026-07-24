@@ -2,9 +2,11 @@
 
 import os
 import sys
+from copy import deepcopy
 from dataclasses import asdict, dataclass
+from functools import wraps
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import tyro
@@ -13,6 +15,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
+from mjlab.tasks.velocity.mdp.velocity_command import UniformVelocityCommand
 from mjlab.utils.os import get_wandb_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
@@ -37,6 +40,88 @@ class PlayConfig:
 
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
+
+
+def _agent_get(agent: Any, key: str, default: Any = None) -> Any:
+  """Read a runner setting from either a dataclass or a plain dict config."""
+  return agent.get(key, default) if isinstance(agent, dict) else getattr(agent, key, default)
+
+
+def _agent_to_dict(agent: Any) -> dict[str, Any]:
+  """Serialize a runner config without mutating nested distillation settings."""
+  return deepcopy(agent) if isinstance(agent, dict) else asdict(agent)
+
+
+def _is_distillation_cfg(agent: Any) -> bool:
+  """Return True when the task uses the Distillation algorithm."""
+  algorithm = _agent_get(agent, "algorithm", None)
+  if isinstance(algorithm, dict):
+    return algorithm.get("class_name") == "Distillation"
+  return getattr(algorithm, "class_name", None) == "Distillation"
+
+
+def _checkpoint_load_cfg(agent: Any) -> dict[str, bool]:
+  """Select the runner load keys that match the checkpoint layout."""
+  if _is_distillation_cfg(agent):
+    # Distill checkpoints store student/teacher, not PPO actor/critic.
+    return {
+      "student": True,
+      "teacher": False,
+      "optimizer": False,
+      "iteration": False,
+    }
+  return {"actor": True}
+
+
+def _patch_zero_velocity_viser_gui(env: ManagerBasedRlEnv) -> None:
+  """Allow Viser to build a slider for an intentionally fixed command axis.
+
+  Viser requires every command-axis maximum to be at least 0.1. Distill play keeps
+  ``lin_vel_y=(0, 0)`` to match the EMP teacher distribution, so temporarily widen
+  the range only while the GUI controls are constructed, then restore it.
+  """
+  for term_name in env.command_manager.active_terms:
+    term = env.command_manager.get_term(term_name)
+    if not isinstance(term, UniformVelocityCommand):
+      continue
+
+    original_create_gui = term.create_gui
+    original_compute = term.compute
+    zero_axis_indices = [
+      index
+      for index, axis in enumerate(("lin_vel_x", "lin_vel_y", "ang_vel_z"))
+      if getattr(term.cfg.ranges, axis) == (0.0, 0.0)
+    ]
+
+    @wraps(original_create_gui)
+    def create_gui_with_zero_range_support(*args, _term=term, **kwargs):
+      original_ranges = _term.cfg.ranges
+      zero_axes = [
+        axis
+        for axis in ("lin_vel_x", "lin_vel_y", "ang_vel_z")
+        if getattr(original_ranges, axis) == (0.0, 0.0)
+      ]
+      for axis in zero_axes:
+        setattr(original_ranges, axis, (-0.1, 0.1))
+      try:
+        return original_create_gui(*args, **kwargs)
+      finally:
+        for axis in zero_axes:
+          setattr(original_ranges, axis, (0.0, 0.0))
+
+    @wraps(original_compute)
+    def compute_with_fixed_zero_axes(
+      dt: float,
+      _term=term,
+      _original_compute=original_compute,
+      _zero_axis_indices=zero_axis_indices,
+    ) -> None:
+      _original_compute(dt)
+      if _zero_axis_indices:
+        _term.vel_command_b[:, _zero_axis_indices] = 0.0
+
+    term.create_gui = create_gui_with_zero_range_support
+    term.compute = compute_with_fixed_zero_axes
 
 
 def run_play(task_id: str, cfg: PlayConfig):
@@ -84,19 +169,22 @@ def run_play(task_id: str, cfg: PlayConfig):
   log_dir: Path | None = None
   resume_path: Path | None = None
   if TRAINED_MODE:
-    log_root_path = (Path("logs") / "rsl_rl" / agent_cfg.experiment_name).resolve()
+    log_root_path = (
+      Path("logs") / "rsl_rl" / _agent_get(agent_cfg, "experiment_name")
+    ).resolve()
     if cfg.checkpoint_file is not None:
       resume_path = Path(cfg.checkpoint_file)
       if not resume_path.exists():
         raise FileNotFoundError(f"Checkpoint file not found: {resume_path}")
       print(f"[INFO]: Loading checkpoint: {resume_path.name}")
     else:
-      if cfg.wandb_run_path is None:
+      wandb_run_path = getattr(cfg, "wandb_run_path", None)
+      if wandb_run_path is None:
         raise ValueError(
-          "`wandb_run_path` is required when `checkpoint_file` is not provided."
+          "`--checkpoint-file` is required when playing a trained policy."
         )
       resume_path, was_cached = get_wandb_checkpoint_path(
-        log_root_path, Path(cfg.wandb_run_path)
+        log_root_path, Path(wandb_run_path)
       )
       # Extract run_id and checkpoint name from path for display.
       run_id = resume_path.parent.name
@@ -132,7 +220,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       disable_logger=True,
     )
 
-  env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+  env = RslRlVecEnvWrapper(env, clip_actions=_agent_get(agent_cfg, "clip_actions"))
   if DUMMY_MODE:
     action_shape: tuple[int, ...] = env.unwrapped.action_space.shape
     if cfg.agent == "zero":
@@ -153,9 +241,15 @@ def run_play(task_id: str, cfg: PlayConfig):
       policy = PolicyRandom()
   else:
     runner_cls = load_runner_cls(task_id) or MjlabOnPolicyRunner
-    runner = runner_cls(env, asdict(agent_cfg), device=device)
+    runner_cfg = _agent_to_dict(agent_cfg)
+    if _is_distillation_cfg(agent_cfg):
+      print("[INFO]: Using DistillationRunner student policy for play")
+    runner = runner_cls(env, runner_cfg, device=device)
     runner.load(
-      str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
+      str(resume_path),
+      load_cfg=_checkpoint_load_cfg(agent_cfg),
+      strict=True,
+      map_location=device,
     )
     policy = runner.get_inference_policy(device=device)
 
@@ -170,6 +264,7 @@ def run_play(task_id: str, cfg: PlayConfig):
   if resolved_viewer == "native":
     NativeMujocoViewer(env, policy).run()
   elif resolved_viewer == "viser":
+    _patch_zero_velocity_viser_gui(env.unwrapped)
     ViserPlayViewer(env, policy).run()
   else:
     raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
