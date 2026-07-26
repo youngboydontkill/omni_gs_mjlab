@@ -137,4 +137,13 @@ uv run python scripts/visualize_teacher.py Kuavo-S45-Rough-Distill --viewer  vis
 ```bash
 uv run python scripts/reexport_onnx.py  logs/rsl_rl/kuavo_s45_velocity/1/model_40000.pt<checkpoint地址>    Kuavo-S45-Rough<任务名>
 ```
+
+# 模型训练
+```bash
+uv run python scripts/train.py Kuavo-S54-Rough-CNN\
+    --enable-nan-guard True \
+    --env.scene.num-envs 1024 \
+    --agent.max-iterations 50000
+```
+
 agent.resume=True
