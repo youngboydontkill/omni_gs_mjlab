@@ -210,6 +210,7 @@ def _kuavo_rough_env_cfg(
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False
     cfg.events.pop("push_robot", None)
+    cfg.events.pop("depth_camera_pitch", None)
     cfg.curriculum = {}
     cfg.events["randomize_terrain"] = EventTermCfg(
       func=envs_mdp.randomize_terrain,
@@ -387,7 +388,10 @@ def _scene_cfg(**kwargs) -> SceneEntityCfg:
   return SceneEntityCfg("robot", **kwargs)
 
 
-def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+def _apply_s45_emp_rewards(
+  cfg: ManagerBasedRlEnvCfg,
+  controlled_joints: tuple[str, ...] = S45_CONTROLLED_JOINTS,
+) -> None:
   """In-place: rewrite ``cfg.rewards`` to match Leju-IsaacLab S42 EMP setup."""
 
   # 1) New sensor: any contact between non-foot bodies and the world.
@@ -437,12 +441,11 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
 
   # Downward raycast clusters under each foot for the edge-contact penalty
   # (Hiking in the Wild §III-C, raycast-normal approximation — see
-  # mdp.edge_contact_penalty). A small 3x3 grid (5cm span, 2.5cm resolution)
-  # samples terrain height + normal directly beneath the sole; a foot on a
-  # stair lip / gap shows a large height spread and/or side-face normals.
+  # mdp.edge_contact_penalty). Cover most of the sole instead of only its
+  # center so a heel/toe overhang cannot escape the edge detector.
   _edge_scanner_kwargs = dict(
     ray_alignment="yaw",
-    pattern=GridPatternCfg(size=(0.05, 0.05), resolution=0.025),  # 3x3, downward
+    pattern=GridPatternCfg(size=(0.16, 0.08), resolution=0.02),  # 9x5, downward
     max_distance=1.0,
     exclude_parent_body=True,
     debug_vis=False,
@@ -493,7 +496,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
   ankle_torque_joints = (r"leg_[lr]6_joint",)
   hip_joints = (r"leg_[lr][12]_joint",)
   arm_joints = (r"zarm_[lr][1-7]_joint",)
-  all_controlled = _controlled_joints_cfg(S45_CONTROLLED_JOINTS)
+  all_controlled = _controlled_joints_cfg(controlled_joints)
 
   cfg.rewards.update({
     "dof_vel_l2": RewardTermCfg(
@@ -532,8 +535,8 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
       weight=-2.0e-5,
       params={
         "asset_cfg": _scene_cfg(
-          joint_names=S45_CONTROLLED_JOINTS,
-          actuator_names=S45_CONTROLLED_JOINTS,
+          joint_names=controlled_joints,
+          actuator_names=controlled_joints,
           preserve_order=True,
         ),
       },
@@ -593,7 +596,7 @@ def _apply_s45_emp_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
     # its regularizer stay in proportion after the rebalance.
     "joint_deviation_arms": RewardTermCfg(
       func=mdp.joint_deviation_l1,
-      weight=-0.1,
+      weight=-0.3,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
       },
@@ -703,7 +706,7 @@ def _enable_s45_foothold_reward(cfg: ManagerBasedRlEnvCfg) -> None:
   """
   cfg.rewards["edge_contact"] = RewardTermCfg(
     func=mdp.edge_contact_penalty,
-    weight=-0.5,
+    weight=-2.0,
     params={
       "sensor_name_l": "feet_l_edge_scanner",
       "sensor_name_r": "feet_r_edge_scanner",
@@ -724,7 +727,7 @@ def _kuavo_s54_base_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     viewer_body="waist_yaw",
     has_waist=True,
     depth_camera_parent_body="robot/waist_yaw",
-    depth_camera_pos=(0.0987, 0.0, -0.028449),
+    depth_camera_pos=(0.0987, 0.0, -0.028449), # 0.09538, 0.0, -0.01491
     play=play,
   )
 
@@ -786,6 +789,31 @@ def kuavo_s54_rough_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   depth_camera.width = 42
   depth_camera.height = 42
   _separate_depth_observations(cfg, normalize=False)
+  return cfg
+
+
+def kuavo_s54_rough_cnn_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create S54 rough terrain CNN task with S45 EMP rewards and waist camera.
+
+  The depth camera is mounted on the waist with a 59.6° downward pitch,
+  matching the real ``waist_camera_link`` body in ``biped_s54.xml``
+  (``quat=(0.868, 0, 0.497, 0)`` = R_y(59.6°)), composed with the MuJoCo
+  camera optical rotation:
+
+    q = 0.5·(cos(θ/2)+sin(θ/2), cos(θ/2)-sin(θ/2),
+             -cos(θ/2)+sin(θ/2), -cos(θ/2)-sin(θ/2))
+    θ = 59.6° → (0.682369, 0.185395, -0.185395, -0.682369)
+
+  In play mode the ``depth_camera_pitch`` domain-randomisation event is
+  removed so the extrinsics stay fixed at the design value.
+  """
+  cfg = _kuavo_s54_base_rough_env_cfg(play=play)
+  depth_camera = next(
+    sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
+  )
+  depth_camera.quat = (0.682369, 0.185395, -0.185395, -0.682369)
+  _apply_s45_emp_rewards(cfg, controlled_joints=S54_CONTROLLED_JOINTS)
+  _separate_depth_observations(cfg, normalize=True)
   return cfg
 
 
