@@ -234,6 +234,31 @@ def kuavo_s54_flat_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return _kuavo_base_ppo_runner_cfg()
 
 
+def kuavo_s54_rough_cnn_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the CNN runner for S54 rough with waist camera + EMP rewards."""
+  cnn_cfg = {
+    "output_channels": (16, 32),
+    "kernel_size": (5, 3),
+    "stride": (2, 2),
+    "padding": "zeros",
+    "global_pool": "avg",
+  }
+  cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.actor.class_name = "CNNModel"
+  cfg.actor.cnn_cfg = cnn_cfg
+  cfg.critic.class_name = "CNNModel"
+  cfg.critic.cnn_cfg = cnn_cfg
+  cfg.algorithm.share_cnn_encoders = False
+  cfg.obs_groups = {
+    "actor": ("actor", "actor_depth"),
+    "critic": ("critic", "critic_depth"),
+  }
+  cfg.algorithm.entropy_coef = 5.0e-3
+  cfg.actor.distribution_cfg["init_std"] = 0.5
+  cfg.experiment_name = "kuavo_s54_cnn_velocity"
+  return cfg
+
+
 def kuavo_s54_head_cnn_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create the CNN RL runner configuration for the head-controlled S54 task."""
   cnn_cfg = {
