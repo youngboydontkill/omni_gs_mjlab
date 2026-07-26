@@ -15,6 +15,7 @@ from .env_cfgs import (
   kuavo_s45_stairs_env_cfg,
   kuavo_s54_flat_env_cfg,
   kuavo_s54_head_cnn_rough_env_cfg,
+  kuavo_s54_rough_cnn_env_cfg,
   kuavo_s54_rough_env_cfg,
 )
 from .rl_cfg import (
@@ -28,6 +29,7 @@ from .rl_cfg import (
   kuavo_s54_head_cnn_ppo_runner_cfg,
   kuavo_s54_head_moe_ppo_runner_cfg,
   kuavo_s54_ppo_runner_cfg,
+  kuavo_s54_rough_cnn_ppo_runner_cfg,
 )
 
 register_mjlab_task(
@@ -67,6 +69,14 @@ register_mjlab_task(
   env_cfg=kuavo_s54_rough_env_cfg(),
   play_env_cfg=kuavo_s54_rough_env_cfg(play=True),
   rl_cfg=kuavo_s54_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Kuavo-S54-Rough-CNN",
+  env_cfg=kuavo_s54_rough_cnn_env_cfg(),
+  play_env_cfg=kuavo_s54_rough_cnn_env_cfg(play=True),
+  rl_cfg=kuavo_s54_rough_cnn_ppo_runner_cfg(),
   runner_cls=VelocityOnPolicyRunner,
 )
 

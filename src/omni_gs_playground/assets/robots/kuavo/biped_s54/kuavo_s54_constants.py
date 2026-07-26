@@ -73,100 +73,100 @@ def _position_actuator(
 
 KUAVO_S54_LEG_1_ACTUATOR = _position_actuator(
   ("leg_[lr]1_joint",),
-  stiffness=60.0,
-  damping=6.0,
-  effort_limit=101.6,
+  stiffness=48.0,
+  damping=5.0,
+  effort_limit=100.0,
   armature=0.05,
 )
 KUAVO_S54_LEG_2_ACTUATOR = _position_actuator(
   ("leg_[lr]2_joint",),
-  stiffness=60.0,
-  damping=6.0,
-  effort_limit=56.8,
+  stiffness=48.0,
+  damping=5.0,
+  effort_limit=50.5,
   armature=0.025,
 )
 KUAVO_S54_LEG_3_ACTUATOR = _position_actuator(
   ("leg_[lr]3_joint",),
-  stiffness=80.0,
-  damping=6.0,
-  effort_limit=105.6,
+  stiffness=68.0,
+  damping=5.0,
+  effort_limit=100.0,
   armature=0.025,
 )
 KUAVO_S54_LEG_4_ACTUATOR = _position_actuator(
   ("leg_[lr]4_joint",),
-  stiffness=95.0,
+  stiffness=68.0,
   damping=6.0,
-  effort_limit=224.0,
+  effort_limit=150.0,
   armature=0.05,
 )
 KUAVO_S54_LEG_5_ACTUATOR = _position_actuator(
   ("leg_[lr]5_joint",),
-  stiffness=55.0,
+  stiffness=18.0,
   damping=7.5,
-  effort_limit=91.6,
+  effort_limit=70.0,
   armature=0.05,
 )
 KUAVO_S54_LEG_6_ACTUATOR = _position_actuator(
   ("leg_[lr]6_joint",),
-  stiffness=55.0,
+  stiffness=18.0,
   damping=7.5,
-  effort_limit=57.0,
+  effort_limit=50.0,
   armature=0.05,
 )
 KUAVO_S54_WAIST_ACTUATOR = _position_actuator(
   ("waist_yaw_joint",),
-  stiffness=40.0,
-  damping=4.0,
-  effort_limit=81.6,
+  stiffness=30.0,
+  damping=3.0,
+  effort_limit=33.0,
   armature=0.025,
 )
 KUAVO_S54_ARM_1_ACTUATOR = _position_actuator(
   ("zarm_[lr]1_joint",),
-  stiffness=20.0,
+  stiffness=30.0,
   damping=3.0,
-  effort_limit=52.8,
+  effort_limit=30.0,
   armature=0.025,
 )
 KUAVO_S54_ARM_2_ACTUATOR = _position_actuator(
   ("zarm_[lr]2_joint",),
-  stiffness=20.0,
+  stiffness=30.0,
   damping=3.0,
-  effort_limit=60.0,
+  effort_limit=30.0,
   armature=0.02,
 )
 KUAVO_S54_ARM_3_ACTUATOR = _position_actuator(
   ("zarm_[lr]3_joint",),
-  stiffness=20.0,
+  stiffness=15.0,
   damping=3.0,
-  effort_limit=45.6,
+  effort_limit=20.0,
   armature=0.02,
 )
 KUAVO_S54_ARM_4_ACTUATOR = _position_actuator(
   ("zarm_[lr]4_joint",),
-  stiffness=20.0,
+  stiffness=30.0,
   damping=3.0,
-  effort_limit=60.0,
+  effort_limit=30.0,
   armature=0.02,
 )
 KUAVO_S54_ARM_5_ACTUATOR = _position_actuator(
   ("zarm_[lr]5_joint",),
   stiffness=15.0,
   damping=3.0,
-  effort_limit=11.0,
+  effort_limit=14.1,
   armature=0.01,
 )
 KUAVO_S54_ARM_6_ACTUATOR = _position_actuator(
   ("zarm_[lr]6_joint",),
   stiffness=15.0,
   damping=3.0,
-  effort_limit=11.0,
+  effort_limit=14.1,
   armature=0.01,
 )
 KUAVO_S54_ARM_7_ACTUATOR = _position_actuator(
   ("zarm_[lr]7_joint",),
   stiffness=15.0,
   damping=3.0,
-  effort_limit=11.0,
+  effort_limit=14.1,
   armature=0.01,
 )
 KUAVO_S54_HEAD_ACTUATOR = BuiltinPositionActuatorCfg(
@@ -181,17 +181,34 @@ KUAVO_S54_HEAD_ACTUATOR = BuiltinPositionActuatorCfg(
 ##
 
 HOME_KEYFRAME = EntityCfg.InitialStateCfg(
-  pos=(0.0, 0.0, 0.925),
+  pos=(0.0, 0.0, 0.965),
   rot=(1.0, 0.0, 0.0, 0.0),
   joint_pos={
+    # Legs — 参考 depth_loco_param.info defaultJointState (0-5: left, 6-11: right).
     "leg_[lr]1_joint": 0.0,
     "leg_[lr]2_joint": 0.0,
-    "leg_[lr]3_joint": -0.4,
-    "leg_[lr]4_joint": 0.69,
-    "leg_[lr]5_joint": -0.33,
+    "leg_[lr]3_joint": -0.24,
+    "leg_[lr]4_joint": 0.5,
+    "leg_[lr]5_joint": -0.26,
     "leg_[lr]6_joint": 0.0,
+    # Waist.
     "waist_yaw_joint": 0.0,
-    "zarm_.*_joint": 0.0,
+    # Arms — 参考 defaultJointState (13-19: left, 20-26: right).
+    "zarm_l1_joint": 0.126,
+    "zarm_l2_joint": 0.1,
+    "zarm_l3_joint": 0.0,
+    "zarm_l4_joint": -0.27,
+    "zarm_l5_joint": 0.0,
+    "zarm_l6_joint": 0.0,
+    "zarm_l7_joint": 0.0,
+    "zarm_r1_joint": 0.126,
+    "zarm_r2_joint": -0.1,
+    "zarm_r3_joint": 0.0,
+    "zarm_r4_joint": -0.27,
+    "zarm_r5_joint": 0.0,
+    "zarm_r6_joint": 0.0,
+    "zarm_r7_joint": 0.0,
+    # Head (used by head-controlled variant).
     "zhead_.*_joint": 0.0,
   },
   joint_vel={".*": 0.0},
