@@ -61,6 +61,245 @@ def track_angular_velocity(
   return torch.exp(-ang_vel_error / std**2)
 
 
+def ssr_orientation_reward(
+  env: ManagerBasedRlEnv,
+  variance: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """SSR Table 6 upright-orientation exponential reward."""
+  asset: Entity = env.scene[asset_cfg.name]
+  error = torch.sum(torch.square(asset.data.projected_gravity_b[:, :2]), dim=1)
+  return torch.exp(-error / variance)
+
+
+def ssr_angular_velocity_reward(
+  env: ManagerBasedRlEnv,
+  variance: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """SSR Table 6 roll/pitch angular-velocity exponential reward."""
+  asset: Entity = env.scene[asset_cfg.name]
+  error = torch.sum(torch.square(asset.data.root_link_ang_vel_b[:, :2]), dim=1)
+  return torch.exp(-error / variance)
+
+
+def ssr_base_height_reward(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  target_height: float,
+  variance: float,
+) -> torch.Tensor:
+  """Reward base height relative to the terrain directly below it."""
+  sensor: RayCastSensor = env.scene[sensor_name]
+  height = sensor.data.frame_pos_w[:, 0, 2] - sensor.data.hit_pos_w[:, 0, 2]
+  height = torch.where(sensor.data.distances[:, 0] >= 0, height, target_height)
+  return torch.exp(-torch.square(height - target_height) / variance)
+
+
+def ssr_action_rate(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Mean squared action rate (normalised by the Kuavo action count)."""
+  delta = env.action_manager.action - env.action_manager.prev_action
+  return torch.mean(torch.square(delta), dim=1)
+
+
+def ssr_action_smoothness(env: ManagerBasedRlEnv) -> torch.Tensor:
+  """Mean squared second action difference from SSR Table 6."""
+  accel = (
+    env.action_manager.action
+    - 2.0 * env.action_manager.prev_action
+    + env.action_manager.prev_prev_action
+  )
+  return torch.mean(torch.square(accel), dim=1)
+
+
+def ssr_joint_velocity(
+  env: ManagerBasedRlEnv,
+  velocity_limit: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  velocity = asset.data.joint_vel[:, asset_cfg.joint_ids] / velocity_limit
+  return torch.mean(torch.square(velocity), dim=1)
+
+
+def ssr_joint_torque(
+  env: ManagerBasedRlEnv,
+  effort_limits: tuple[float, ...],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  effort = asset.data.actuator_force[:, asset_cfg.actuator_ids]
+  limits = effort.new_tensor(effort_limits)
+  return torch.mean(torch.square(effort / limits), dim=1)
+
+
+def ssr_joint_deviation(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  error = (
+    asset.data.joint_pos[:, asset_cfg.joint_ids]
+    - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+  )
+  return torch.mean(torch.abs(error), dim=1)
+
+
+def ssr_joint_position_limit(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  position = asset.data.joint_pos[:, asset_cfg.joint_ids]
+  limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]
+  return ((position < limits[..., 0]) | (position > limits[..., 1])).float().mean(1)
+
+
+def ssr_joint_velocity_limit(
+  env: ManagerBasedRlEnv,
+  velocity_limit: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  return (
+    torch.abs(asset.data.joint_vel[:, asset_cfg.joint_ids]) > velocity_limit
+  ).float().mean(1)
+
+
+def ssr_joint_torque_limit(
+  env: ManagerBasedRlEnv,
+  effort_limits: tuple[float, ...],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  effort = torch.abs(asset.data.actuator_force[:, asset_cfg.actuator_ids])
+  limits = effort.new_tensor(effort_limits)
+  return (effort > limits).float().mean(1)
+
+
+def ssr_stand_still(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  return ssr_joint_deviation(env, asset_cfg) * (
+    torch.norm(command[:, :3], dim=1) <= command_threshold
+  ).float()
+
+
+def ssr_single_support(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  command_name: str,
+  command_threshold: float,
+) -> torch.Tensor:
+  """Reward standing or a single-support state.
+
+  MJLab exposes current contact rather than SSR's 0.2 s contact-count window;
+  air-time tracking still makes this dense at the controller frequency.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None and sensor.data.found is not None
+  standing = torch.norm(command[:, :3], dim=1) <= command_threshold
+  single = (sensor.data.found > 0).sum(dim=1) == 1
+  return (standing | single).float()
+
+
+def ssr_impact_velocity(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.found is not None
+  vertical = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, 2]
+  return torch.sum(torch.square(vertical) * (sensor.data.found > 0), dim=1)
+
+
+def ssr_contact_slippage(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.found is not None
+  velocity = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]
+  return torch.sum(
+    torch.sum(torch.square(velocity), dim=-1) * (sensor.data.found > 0), dim=1
+  )
+
+
+def ssr_excess_air_time(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  target: float,
+) -> torch.Tensor:
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.current_air_time is not None
+  first_contact = sensor.compute_first_contact(env.step_dt).float()
+  excess = torch.clamp(sensor.data.current_air_time - target, min=0.0)
+  return torch.sum(excess * first_contact, dim=1)
+
+
+def ssr_feet_lateral_distance(
+  env: ManagerBasedRlEnv,
+  minimum_distance: float,
+  variance: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  asset: Entity = env.scene[asset_cfg.name]
+  feet = asset.data.site_pos_w[:, asset_cfg.site_ids]
+  root = asset.data.root_link_pos_w.unsqueeze(1)
+  quat = asset.data.root_link_quat_w[:, None].expand(-1, feet.shape[1], -1)
+  feet_b = quat_apply_inverse(quat, feet - root)
+  distance = torch.abs(feet_b[:, 0, 1] - feet_b[:, 1, 1])
+  return torch.exp(torch.minimum(distance - minimum_distance, distance.new_zeros(())) / variance)
+
+
+def ssr_foothold_support(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  contact_sensor_name: str,
+  height_threshold: float,
+  variance: float,
+) -> torch.Tensor:
+  """Dense sole-support reward using SSR's 22.5 cm x 10 cm ray patches.
+
+  Each foot patch is evaluated in stance and swing, so unsafe edge regions
+  produce a pre-contact correction signal. This is the deployable MJLab
+  approximation of SSR's learned Gaussian imagination branch: it preserves
+  the paper's support-deficiency equation but evaluates the current swing-foot
+  projection because reward terms cannot consume policy-internal predictions.
+  """
+  sensor: RayCastSensor = env.scene[sensor_name]
+  contact_sensor: ContactSensor = env.scene[contact_sensor_name]
+  heights = sensor.data.frame_pos_w[..., 2:3] - sensor.data.hit_pos_w[..., 2].view(
+    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame
+  )
+  valid = sensor.data.distances.view(
+    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame
+  ) >= 0
+  terrain_height = -heights
+  imagined_sole = terrain_height.masked_fill(~valid, float("-inf")).max(dim=-1).values
+  imagined_supported = valid & (
+    imagined_sole.unsqueeze(-1) - terrain_height < height_threshold
+  )
+  stance_supported = valid & (-terrain_height < height_threshold)
+  assert contact_sensor.data.found is not None
+  deficiency = torch.where(
+    contact_sensor.data.found > 0,
+    1.0 - stance_supported.float().mean(dim=-1),
+    1.0 - imagined_supported.float().mean(dim=-1),
+  )
+  return torch.exp(-torch.square(deficiency.sum(dim=1)) / variance)
+
+
 def body_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,

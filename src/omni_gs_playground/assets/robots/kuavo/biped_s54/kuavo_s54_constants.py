@@ -20,6 +20,32 @@ assert KUAVO_S54_XML.exists()
 
 KUAVO_S54_HEAD_GEOM_GROUP = 5
 
+# Foot scanner geometry.  The S54 collision sole in ``biped_s54.xml`` spans
+# approximately x=[-0.071, 0.173] m and y=[-0.050, 0.050] m in each
+# ``leg_[lr]6_link`` frame.  Round the length to the 2.5 cm ray spacing and
+# retain the physical 10 cm load-bearing width.  Dedicated sites keep this
+# forward offset separate from the force/torque sensor frames at the ankle.
+KUAVO_S54_SOLE_SCAN_SITE_NAMES = (
+  "l_sole_scan_center",
+  "r_sole_scan_center",
+)
+KUAVO_S54_SOLE_SCAN_CENTER = (0.051, 0.0, 0.0)
+KUAVO_S54_SOLE_SCAN_SIZE = (0.25, 0.10)
+KUAVO_S54_SOLE_SCAN_RESOLUTION = 0.025
+KUAVO_S54_SOLE_SCAN_SHAPE = (5, 11)
+
+
+def _add_sole_scan_sites(spec: mujoco.MjSpec) -> None:
+  for body_name, site_name in zip(
+    ("leg_l6_link", "leg_r6_link"), KUAVO_S54_SOLE_SCAN_SITE_NAMES
+  ):
+    spec.body(body_name).add_site(
+      name=site_name,
+      pos=KUAVO_S54_SOLE_SCAN_CENTER,
+      size=(0.005,),
+      group=3,
+    )
+
 
 def get_spec() -> mujoco.MjSpec:
   """Load the S54 spec with fixed head links and position-controlled joints."""
@@ -31,6 +57,7 @@ def get_spec() -> mujoco.MjSpec:
       spec.delete(sensor)
   spec.delete(spec.joint("zhead_1_joint"))
   spec.delete(spec.joint("zhead_2_joint"))
+  _add_sole_scan_sites(spec)
   return spec
 
 
@@ -42,6 +69,7 @@ def get_spec_with_head() -> mujoco.MjSpec:
   # for body_name in ("zhead_1_link", "zhead_2_link"):
   #   for geom in spec.body(body_name).geoms:
   #     geom.group = KUAVO_S54_HEAD_GEOM_GROUP
+  _add_sole_scan_sites(spec)
   return spec
 
 
@@ -214,6 +242,8 @@ HOME_KEYFRAME = EntityCfg.InitialStateCfg(
   joint_vel={".*": 0.0},
 )
 
+KUAVO_S54_DEFAULT_BASE_HEIGHT = HOME_KEYFRAME.pos[2]
+
 
 ##
 # Final config.
@@ -242,6 +272,28 @@ KUAVO_S54_HEAD_ARTICULATION = EntityArticulationInfoCfg(
   actuators=KUAVO_S54_ARTICULATION.actuators + (KUAVO_S54_HEAD_ACTUATOR,),
   soft_joint_pos_limit_factor=0.95,
 )
+
+# Ordered like the controlled joint/action vector: left leg, right leg, waist,
+# left arm, right arm.  Values remain derived from the actuator definitions
+# above so the SSR reward normalization cannot drift from robot physics.
+_LEG_ACTUATORS = KUAVO_S54_ARTICULATION.actuators[:6]
+_ARM_ACTUATORS = KUAVO_S54_ARTICULATION.actuators[7:]
+KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS = tuple(
+  actuator.effort_limit
+  for actuator in (
+    *_LEG_ACTUATORS,
+    *_LEG_ACTUATORS,
+    KUAVO_S54_WAIST_ACTUATOR,
+    *_ARM_ACTUATORS,
+    *_ARM_ACTUATORS,
+  )
+)
+assert all(limit is not None for limit in KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS)
+
+# S54's source model does not declare joint velocity limits.  Keep the SSR
+# normalization/safety threshold centralized with the other robot control
+# constants until a per-joint hardware limit table is available.
+KUAVO_S54_JOINT_VELOCITY_LIMIT = 20.0
 
 
 def get_kuavo_s54_robot_cfg() -> EntityCfg:

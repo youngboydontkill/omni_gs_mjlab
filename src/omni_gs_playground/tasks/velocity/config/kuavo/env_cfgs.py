@@ -6,8 +6,14 @@ from copy import deepcopy
 from omni_gs_playground.assets.robots.kuavo import (
   KUAVO_S45_ACTION_SCALE,
   KUAVO_S54_ACTION_SCALE,
+  KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
+  KUAVO_S54_DEFAULT_BASE_HEIGHT,
   KUAVO_S54_HEAD_ACTION_SCALE,
   KUAVO_S54_HEAD_GEOM_GROUP,
+  KUAVO_S54_JOINT_VELOCITY_LIMIT,
+  KUAVO_S54_SOLE_SCAN_RESOLUTION,
+  KUAVO_S54_SOLE_SCAN_SITE_NAMES,
+  KUAVO_S54_SOLE_SCAN_SIZE,
   get_kuavo_s45_robot_cfg,
   get_kuavo_s54_head_robot_cfg,
   get_kuavo_s54_robot_cfg,
@@ -814,6 +820,256 @@ def kuavo_s54_rough_cnn_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   depth_camera.quat = (0.682369, 0.185395, -0.185395, -0.682369)
   _apply_s45_emp_rewards(cfg, controlled_joints=S54_CONTROLLED_JOINTS)
   _separate_depth_observations(cfg, normalize=True)
+  return cfg
+
+
+def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the isolated Kuavo-S54 port of SSR (without style rewards)."""
+  cfg = _kuavo_s54_base_rough_env_cfg(play=play)
+  controlled = _controlled_joints_cfg(S54_CONTROLLED_JOINTS)
+  feet = SceneEntityCfg("robot", site_names=FOOT_SITES, preserve_order=True)
+
+  depth_camera = next(
+    sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
+  )
+  depth_camera.width = 42
+  depth_camera.height = 42
+  depth_camera.quat = (0.682369, 0.185395, -0.185395, -0.682369)
+  _separate_depth_observations(cfg, normalize=True)
+
+  base_height_scan = RayCastSensorCfg(
+    name="ssr_base_height_scan",
+    frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
+    ray_alignment="world",
+    pattern=GridPatternCfg(size=(0.0, 0.0), resolution=0.01),
+    max_distance=2.0,
+    exclude_parent_body=True,
+  )
+  body_height_scan = RayCastSensorCfg(
+    name="ssr_body_height_scan",
+    frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
+    ray_alignment="yaw",
+    pattern=GridPatternCfg(size=(0.8, 0.8), resolution=0.1),
+    max_distance=2.0,
+    exclude_parent_body=True,
+  )
+  foot_height_scan = RayCastSensorCfg(
+    name="ssr_foot_height_scan",
+    frame=tuple(
+      ObjRef(type="site", name=site_name, entity="robot")
+      for site_name in KUAVO_S54_SOLE_SCAN_SITE_NAMES
+    ),
+    ray_alignment="yaw",
+    pattern=GridPatternCfg(
+      size=KUAVO_S54_SOLE_SCAN_SIZE,
+      resolution=KUAVO_S54_SOLE_SCAN_RESOLUTION,
+    ),
+    max_distance=1.0,
+    exclude_parent_body=True,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
+    base_height_scan,
+    body_height_scan,
+    foot_height_scan,
+  )
+
+  actor_depth = cfg.observations["actor"].terms["depth"]
+  actor_depth.params.update(flatten=False, normalize=True)
+  cfg.observations["actor"] = ObservationGroupCfg(
+    terms={
+      "proprioception": ObservationTermCfg(
+        func=mdp.ssr_proprioception,
+        params={
+          "command_name": "twist",
+          "angular_velocity_sensor": "robot/BodyGyro",
+          "asset_cfg": controlled,
+        },
+      )
+    },
+    concatenate_terms=True,
+    enable_corruption=True,
+    history_length=5,
+    flatten_history_dim=True,
+  )
+  cfg.observations["actor_depth"] = ObservationGroupCfg(
+    terms={"depth": deepcopy(actor_depth)},
+    concatenate_terms=True,
+    enable_corruption=not play,
+  )
+
+  critic = cfg.observations["critic"]
+  critic.terms.pop("depth", None)
+  critic.terms["body_height_map"] = ObservationTermCfg(
+    func=mdp.ssr_height_map,
+    params={"sensor_name": body_height_scan.name, "miss_value": 2.0},
+  )
+  critic.terms["foot_height_maps"] = ObservationTermCfg(
+    func=mdp.ssr_height_map,
+    params={"sensor_name": foot_height_scan.name, "miss_value": 1.0},
+  )
+  cfg.observations["ssr_body_heights"] = ObservationGroupCfg(
+    terms={
+      "height_map": ObservationTermCfg(
+        func=mdp.ssr_height_map,
+        params={"sensor_name": body_height_scan.name, "miss_value": 2.0},
+      )
+    },
+    concatenate_terms=True,
+    enable_corruption=False,
+  )
+  cfg.observations["ssr_foot_heights"] = ObservationGroupCfg(
+    terms={
+      "height_maps": ObservationTermCfg(
+        func=mdp.ssr_height_map,
+        params={"sensor_name": foot_height_scan.name, "miss_value": 1.0},
+      )
+    },
+    concatenate_terms=True,
+    enable_corruption=False,
+  )
+  cfg.observations["ssr_base_velocity"] = ObservationGroupCfg(
+    terms={
+      "base_velocity": ObservationTermCfg(
+        func=mdp.builtin_sensor,
+        params={"sensor_name": "robot/BodyVel"},
+      )
+    },
+    concatenate_terms=True,
+    enable_corruption=False,
+  )
+
+  cfg.rewards = {
+    "track_linear_velocity": RewardTermCfg(
+      func=mdp.track_linear_velocity,
+      weight=1.0,
+      params={"command_name": "twist", "std": math.sqrt(0.25)},
+    ),
+    "track_angular_velocity": RewardTermCfg(
+      func=mdp.track_angular_velocity,
+      weight=0.8,
+      params={"command_name": "twist", "std": math.sqrt(0.25)},
+    ),
+    "orientation": RewardTermCfg(
+      func=mdp.ssr_orientation_reward,
+      weight=0.5,
+      params={"variance": 0.01},
+    ),
+    "angular_velocity_xy": RewardTermCfg(
+      func=mdp.ssr_angular_velocity_reward,
+      weight=0.25,
+      params={"variance": 0.25},
+    ),
+    "base_height": RewardTermCfg(
+      func=mdp.ssr_base_height_reward,
+      weight=0.4,
+      params={
+        "sensor_name": base_height_scan.name,
+        "target_height": KUAVO_S54_DEFAULT_BASE_HEIGHT,
+        "variance": 0.01,
+      },
+    ),
+    "action_rate": RewardTermCfg(func=mdp.ssr_action_rate, weight=-0.12),
+    "action_smoothness": RewardTermCfg(
+      func=mdp.ssr_action_smoothness, weight=-0.06
+    ),
+    "joint_velocity": RewardTermCfg(
+      func=mdp.ssr_joint_velocity,
+      weight=-0.96,
+      params={
+        "velocity_limit": KUAVO_S54_JOINT_VELOCITY_LIMIT,
+        "asset_cfg": controlled,
+      },
+    ),
+    "joint_torque": RewardTermCfg(
+      func=mdp.ssr_joint_torque,
+      weight=-0.6,
+      params={
+        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
+        "asset_cfg": controlled,
+      },
+    ),
+    "joint_deviation": RewardTermCfg(
+      func=mdp.ssr_joint_deviation, weight=-1.8, params={"asset_cfg": controlled}
+    ),
+    "joint_position_limits": RewardTermCfg(
+      func=mdp.ssr_joint_position_limit,
+      weight=-1.5,
+      params={"asset_cfg": controlled},
+    ),
+    "joint_velocity_limits": RewardTermCfg(
+      func=mdp.ssr_joint_velocity_limit,
+      weight=-6.0,
+      params={
+        "velocity_limit": KUAVO_S54_JOINT_VELOCITY_LIMIT,
+        "asset_cfg": controlled,
+      },
+    ),
+    "joint_torque_limits": RewardTermCfg(
+      func=mdp.ssr_joint_torque_limit,
+      weight=-6.0,
+      params={
+        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
+        "asset_cfg": controlled,
+      },
+    ),
+    "stand_still": RewardTermCfg(
+      func=mdp.ssr_stand_still,
+      weight=-0.12,
+      params={
+        "command_name": "twist",
+        "command_threshold": 0.15,
+        "asset_cfg": controlled,
+      },
+    ),
+    "single_support": RewardTermCfg(
+      func=mdp.ssr_single_support,
+      weight=0.2,
+      params={
+        "sensor_name": "feet_ground_contact",
+        "command_name": "twist",
+        "command_threshold": 0.15,
+      },
+    ),
+    "impact_velocity": RewardTermCfg(
+      func=mdp.ssr_impact_velocity,
+      weight=-1.3,
+      params={"sensor_name": "feet_ground_contact", "asset_cfg": feet},
+    ),
+    "contact_slippage": RewardTermCfg(
+      func=mdp.ssr_contact_slippage,
+      weight=-0.2,
+      params={"sensor_name": "feet_ground_contact", "asset_cfg": feet},
+    ),
+    "feet_air_time": RewardTermCfg(
+      func=mdp.ssr_excess_air_time,
+      weight=-2.0,
+      params={"sensor_name": "feet_ground_contact", "target": 0.4},
+    ),
+    "feet_stumble": RewardTermCfg(
+      func=mdp.feet_stumble,
+      weight=-2.0,
+      params={"sensor_name": "feet_ground_contact"},
+    ),
+    "feet_lateral_distance": RewardTermCfg(
+      func=mdp.ssr_feet_lateral_distance,
+      weight=0.08,
+      params={
+        "minimum_distance": 0.22,
+        "variance": 0.03,
+        "asset_cfg": feet,
+      },
+    ),
+    "foothold_support": RewardTermCfg(
+      func=mdp.ssr_foothold_support,
+      weight=0.25,
+      params={
+        "sensor_name": foot_height_scan.name,
+        "contact_sensor_name": "feet_ground_contact",
+        "height_threshold": 0.03,
+        "variance": 0.0625,
+      },
+    ),
+  }
   return cfg
 
 

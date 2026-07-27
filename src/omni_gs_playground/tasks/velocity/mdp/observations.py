@@ -7,12 +7,62 @@ import torch.nn.functional as F
 
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import ContactSensor
+from mjlab.sensor import ContactSensor, RayCastSensor
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
 _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
+
+
+def ssr_proprioception(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  angular_velocity_sensor: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Build one SSR proprioceptive frame for the Kuavo morphology.
+
+  SSR uses 72 values on its 21-DoF platform. Kuavo-S54 controls 27 joints, so
+  the same semantic layout is 90-D: angular velocity, projected gravity,
+  command, relative joint position/velocity, and the previous action.
+  Keeping this as one observation term makes the manager's five-frame history
+  frame-major, which the SSR temporal encoder can reshape without relying on
+  per-term history internals.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  angular_velocity = env.scene[angular_velocity_sensor].data
+  return torch.cat(
+    (
+      angular_velocity,
+      asset.data.projected_gravity_b,
+      command[:, :3],
+      asset.data.joint_pos[:, asset_cfg.joint_ids]
+      - asset.data.default_joint_pos[:, asset_cfg.joint_ids],
+      asset.data.joint_vel[:, asset_cfg.joint_ids],
+      env.action_manager.action,
+    ),
+    dim=-1,
+  )
+
+
+def ssr_height_map(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  miss_value: float = 1.0,
+) -> torch.Tensor:
+  """Return terrain heights relative to each raycast attachment frame."""
+  sensor: RayCastSensor = env.scene[sensor_name]
+  data = sensor.data
+  batch = data.distances.shape[0]
+  frame_z = data.frame_pos_w[..., 2:3]
+  hit_z = data.hit_pos_w[..., 2].view(
+    batch, sensor.num_frames, sensor.num_rays_per_frame
+  )
+  heights = (frame_z - hit_z).reshape(batch, -1)
+  return torch.where(data.distances >= 0, heights, heights.new_full((), miss_value))
 
 
 def foot_height(

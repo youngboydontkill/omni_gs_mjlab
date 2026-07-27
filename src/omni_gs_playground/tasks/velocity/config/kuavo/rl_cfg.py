@@ -30,6 +30,20 @@ class RslRlMoEModelCfg(RslRlModelCfg):
 
 
 @dataclass
+class RslRlSsrModelCfg(RslRlModelCfg):
+  """RSL-RL model configuration for the SSR cross-modal actor."""
+
+  ssr_cfg: dict[str, Any] | None = None
+
+
+@dataclass
+class RslRlSsrPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+  """PPO configuration carrying SSR's bilateral data augmentation."""
+
+  symmetry_cfg: dict[str, Any] | None = None
+
+
+@dataclass
 class RslRlAmpOnPolicyRunnerCfg(RslRlOnPolicyRunnerCfg):
   """Runner config that carries ``amp_cfg`` at the top level.
 
@@ -256,6 +270,66 @@ def kuavo_s54_rough_cnn_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.algorithm.entropy_coef = 5.0e-3
   cfg.actor.distribution_cfg["init_std"] = 0.5
   cfg.experiment_name = "kuavo_s54_cnn_velocity"
+  return cfg
+
+
+def kuavo_s54_rough_ssr_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the paper-aligned SSR runner for the 27-DoF Kuavo-S54."""
+  cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.actor = RslRlSsrModelCfg(
+    class_name="SSRModel",
+    hidden_dims=(1024, 512, 128),
+    activation="elu",
+    obs_normalization=True,
+    distribution_cfg={
+      "class_name": "GaussianDistribution",
+      "init_std": 1.0,
+      "std_type": "scalar",
+      "std_range": (0.2, 5.0),
+    },
+    ssr_cfg={
+      "history_length": 5,
+      "proprio_group": "actor",
+      "depth_group": "actor_depth",
+      "foot_height_group": "ssr_foot_heights",
+      "body_height_group": "ssr_body_heights",
+      "velocity_group": "ssr_base_velocity",
+    },
+  )
+  cfg.critic = RslRlModelCfg(
+    hidden_dims=(512, 256, 128),
+    activation="elu",
+    obs_normalization=True,
+  )
+  cfg.obs_groups = {
+    "actor": ("actor", "actor_depth"),
+    "critic": ("critic",),
+  }
+  cfg.algorithm = RslRlSsrPpoAlgorithmCfg(
+    value_loss_coef=1.0,
+    use_clipped_value_loss=True,
+    clip_param=0.2,
+    entropy_coef=5.0e-3,
+    num_learning_epochs=5,
+    num_mini_batches=4,
+    learning_rate=5.0e-4,
+    schedule="adaptive",
+    gamma=0.99,
+    lam=0.95,
+    desired_kl=0.01,
+    max_grad_norm=1.0,
+    symmetry_cfg={
+      "data_augmentation_func": (
+        "omni_gs_playground.tasks.velocity.mdp:kuavo_s54_ssr_symmetry"
+      ),
+      "use_data_augmentation": True,
+      "use_mirror_loss": False,
+      "mirror_loss_coeff": 0.0,
+    },
+  )
+  cfg.num_steps_per_env = 24
+  cfg.max_iterations = 20001
+  cfg.experiment_name = "kuavo_s54_rough_ssr"
   return cfg
 
 
