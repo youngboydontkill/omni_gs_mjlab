@@ -585,7 +585,7 @@ def _apply_s45_emp_rewards(
     # Keep it as a posture prior, not the dominant task signal.
     "track_default_arm_pos": RewardTermCfg(
       func=mdp.track_default_arm_pos,
-      weight=1.0,
+      weight=0.0,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
         "alpha": 5.0,
@@ -602,7 +602,7 @@ def _apply_s45_emp_rewards(
     # its regularizer stay in proportion after the rebalance.
     "joint_deviation_arms": RewardTermCfg(
       func=mdp.joint_deviation_l1,
-      weight=-0.3,
+      weight=-0.0,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
       },
@@ -828,6 +828,9 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = _kuavo_s54_base_rough_env_cfg(play=play)
   controlled = _controlled_joints_cfg(S54_CONTROLLED_JOINTS)
   feet = SceneEntityCfg("robot", site_names=FOOT_SITES, preserve_order=True)
+  sole_centers = SceneEntityCfg(
+    "robot", site_names=KUAVO_S54_SOLE_SCAN_SITE_NAMES, preserve_order=True
+  )
 
   depth_camera = next(
     sensor for sensor in cfg.scene.sensors or () if sensor.name == "depth"
@@ -867,10 +870,22 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     max_distance=1.0,
     exclude_parent_body=True,
   )
+  foothold_planning_scan = RayCastSensorCfg(
+    name="ssr_foothold_planning_scan",
+    frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
+    ray_alignment="yaw",
+    # The planning raster is interpolated at the S54 sole's 2.5 cm support
+    # points. The compact next-step window keeps 1024-env ray graphs tractable;
+    # candidates outside it are conservatively treated as unsupported.
+    pattern=GridPatternCfg(size=(1.0, 0.6), resolution=0.05),
+    max_distance=2.0,
+    exclude_parent_body=True,
+  )
   cfg.scene.sensors = (cfg.scene.sensors or ()) + (
     base_height_scan,
     body_height_scan,
     foot_height_scan,
+    foothold_planning_scan,
   )
 
   actor_depth = cfg.observations["actor_depth"].terms["depth"]
@@ -932,6 +947,29 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "base_velocity": ObservationTermCfg(
         func=mdp.builtin_sensor,
         params={"sensor_name": "robot/BodyVel"},
+      )
+    },
+    concatenate_terms=True,
+    enable_corruption=False,
+  )
+  cfg.observations["ssr_foothold_terrain"] = ObservationGroupCfg(
+    terms={
+      "planning_map": ObservationTermCfg(
+        func=mdp.ssr_foothold_planning_map,
+        params={"sensor_name": foothold_planning_scan.name},
+      )
+    },
+    concatenate_terms=True,
+    enable_corruption=False,
+  )
+  cfg.observations["ssr_foothold_geometry"] = ObservationGroupCfg(
+    terms={
+      "geometry": ObservationTermCfg(
+        func=mdp.ssr_foothold_geometry,
+        params={
+          "contact_sensor_name": "feet_ground_contact",
+          "asset_cfg": sole_centers,
+        },
       )
     },
     concatenate_terms=True,
@@ -1057,16 +1095,6 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "minimum_distance": 0.22,
         "variance": 0.03,
         "asset_cfg": feet,
-      },
-    ),
-    "foothold_support": RewardTermCfg(
-      func=mdp.ssr_foothold_support,
-      weight=0.25,
-      params={
-        "sensor_name": foot_height_scan.name,
-        "contact_sensor_name": "feet_ground_contact",
-        "height_threshold": 0.03,
-        "variance": 0.0625,
       },
     ),
   }

@@ -65,6 +65,67 @@ def ssr_height_map(
   return torch.where(data.distances >= 0, heights, heights.new_full((), miss_value))
 
 
+def ssr_foothold_planning_map(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+) -> torch.Tensor:
+  """Return a root-yaw terrain grid followed by its ray-validity mask.
+
+  Heights are measured downward from the planning sensor frame.  Keeping the
+  validity mask as a second channel lets the imagined-foothold reward treat
+  out-of-map and missed rays as unsupported rather than as a fabricated height.
+  """
+  sensor: RayCastSensor = env.scene[sensor_name]
+  data = sensor.data
+  batch = data.distances.shape[0]
+  hit_z = data.hit_pos_w[..., 2].reshape(batch, -1)
+  frame_z = data.frame_pos_w[..., 2:3].expand(-1, -1, sensor.num_rays_per_frame)
+  heights = frame_z.reshape(batch, -1) - hit_z
+  valid = data.distances.reshape(batch, -1) >= 0
+  heights = torch.where(valid, heights, torch.zeros_like(heights))
+  return torch.cat((heights, valid.float()), dim=-1)
+
+
+def ssr_foothold_geometry(
+  env: ManagerBasedRlEnv,
+  contact_sensor_name: str,
+  asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+  """Return the fixed 13-D geometry contract used by imagined footholds.
+
+  Layout: root world XY (2), root-yaw cos/sin (2), left/right sole-center
+  world XY (4), contact flags (2), first-contact flags (2), terrain level (1).
+  The world positions allow future touchdown labels to be transformed back to
+  every source timestep's root-yaw frame after the contact becomes observable.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[contact_sensor_name]
+  root_pos = asset.data.root_link_pos_w
+  root_quat = asset.data.root_link_quat_w
+  w, x, y, z = root_quat.unbind(dim=-1)
+  yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y.square() + z.square()))
+  sole_xy = asset.data.site_pos_w[:, asset_cfg.site_ids, :2].flatten(start_dim=1)
+  assert contact_sensor.data.found is not None
+  contacts = (contact_sensor.data.found > 0).float()
+  first_contacts = contact_sensor.compute_first_contact(env.step_dt).float()
+  terrain = env.scene.terrain
+  if terrain is not None and terrain.terrain_levels is not None:
+    terrain_level = terrain.terrain_levels.float().unsqueeze(-1)
+  else:
+    terrain_level = torch.zeros(env.num_envs, 1, device=env.device)
+  return torch.cat(
+    (
+      root_pos[:, :2],
+      torch.stack((torch.cos(yaw), torch.sin(yaw)), dim=-1),
+      sole_xy,
+      contacts,
+      first_contacts,
+      terrain_level,
+    ),
+    dim=-1,
+  )
+
+
 def foot_height(
   env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG
 ) -> torch.Tensor:

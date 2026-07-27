@@ -3,6 +3,10 @@
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from omni_gs_playground.assets.robots.kuavo import (
+  KUAVO_S54_SOLE_SCAN_RESOLUTION,
+  KUAVO_S54_SOLE_SCAN_SIZE,
+)
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
@@ -41,6 +45,7 @@ class RslRlSsrPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
   """PPO configuration carrying SSR's bilateral data augmentation."""
 
   symmetry_cfg: dict[str, Any] | None = None
+  foothold_cfg: dict[str, Any] | None = None
 
 
 @dataclass
@@ -325,6 +330,32 @@ def kuavo_s54_rough_ssr_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       "use_data_augmentation": True,
       "use_mirror_loss": False,
       "mirror_loss_coeff": 0.0,
+    },
+    foothold_cfg={
+      "state_group": "critic",
+      "terrain_group": "ssr_foothold_terrain",
+      "geometry_group": "ssr_foothold_geometry",
+      "map_size": (1.0, 0.6),
+      "map_resolution": 0.05,
+      "sole_size": KUAVO_S54_SOLE_SCAN_SIZE,
+      "sole_resolution": KUAVO_S54_SOLE_SCAN_RESOLUTION,
+      "hidden_dims": (512, 256, 128),
+      "activation": "elu",
+      "learning_rate": 5.0e-4,
+      "replay_capacity": 32768,
+      "batch_size": 1024,
+      "updates_per_iteration": 4,
+      "max_pending_steps": 32,
+      "train_min_samples": 1024,
+      "reward_min_samples": 4096,
+      "reward_min_updates": 100,
+      "reward_min_terrain_level": 5.0,
+      "reward_weight": 0.25,
+      "reward_variance": 0.0625,
+      "height_threshold": 0.03,
+      "min_std": 0.02,
+      "max_std": 0.25,
+      "max_target_distance": 1.5,
     },
   )
   cfg.num_steps_per_env = 24

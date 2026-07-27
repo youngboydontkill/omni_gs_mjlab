@@ -262,44 +262,6 @@ def ssr_feet_lateral_distance(
   return torch.exp(torch.minimum(distance - minimum_distance, distance.new_zeros(())) / variance)
 
 
-def ssr_foothold_support(
-  env: ManagerBasedRlEnv,
-  sensor_name: str,
-  contact_sensor_name: str,
-  height_threshold: float,
-  variance: float,
-) -> torch.Tensor:
-  """Dense sole-support reward using SSR's 22.5 cm x 10 cm ray patches.
-
-  Each foot patch is evaluated in stance and swing, so unsafe edge regions
-  produce a pre-contact correction signal. This is the deployable MJLab
-  approximation of SSR's learned Gaussian imagination branch: it preserves
-  the paper's support-deficiency equation but evaluates the current swing-foot
-  projection because reward terms cannot consume policy-internal predictions.
-  """
-  sensor: RayCastSensor = env.scene[sensor_name]
-  contact_sensor: ContactSensor = env.scene[contact_sensor_name]
-  heights = sensor.data.frame_pos_w[..., 2:3] - sensor.data.hit_pos_w[..., 2].view(
-    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame
-  )
-  valid = sensor.data.distances.view(
-    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame
-  ) >= 0
-  terrain_height = -heights
-  imagined_sole = terrain_height.masked_fill(~valid, float("-inf")).max(dim=-1).values
-  imagined_supported = valid & (
-    imagined_sole.unsqueeze(-1) - terrain_height < height_threshold
-  )
-  stance_supported = valid & (-terrain_height < height_threshold)
-  assert contact_sensor.data.found is not None
-  deficiency = torch.where(
-    contact_sensor.data.found > 0,
-    1.0 - stance_supported.float().mean(dim=-1),
-    1.0 - imagined_supported.float().mean(dim=-1),
-  )
-  return torch.exp(-torch.square(deficiency.sum(dim=1)) / variance)
-
-
 def body_orientation_l2(
   env: ManagerBasedRlEnv,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
