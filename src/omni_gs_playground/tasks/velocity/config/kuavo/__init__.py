@@ -149,8 +149,16 @@ register_mjlab_task(
 
 register_mjlab_task(
   task_id="Kuavo-S45-Rough-Distill-Finetune",
-  env_cfg=kuavo_s45_rough_distill_env_cfg(adaptive_terrain_curriculum=True),
+  env_cfg=kuavo_s45_rough_distill_env_cfg(),
   play_env_cfg=kuavo_s45_rough_distill_env_cfg(play=True),
   rl_cfg=kuavo_s45_distill_finetune_ppo_runner_cfg(),
+  runner_cls=VelocityOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Kuavo-S45-Rough-Distill-Finetune-Curriculum",
+  env_cfg=kuavo_s45_rough_distill_env_cfg(adaptive_terrain_curriculum=True),
+  play_env_cfg=kuavo_s45_rough_distill_env_cfg(play=True),
+  rl_cfg=kuavo_s45_distill_finetune_curriculum_ppo_runner_cfg(),
   runner_cls=VelocityOnPolicyRunner,
 )

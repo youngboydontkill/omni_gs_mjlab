@@ -5,6 +5,192 @@
 
 ---
 
+## 2026-07-26 新增 S54-Rough-Blind 盲策略任务
+
+**动机**：参考 S54-Rough-CNN 的结构创建纯本体感知版本（无深度相机），用于对比有/无外感时的粗糙地形训练效果。
+
+**改动**（3 文件）
+
+| 文件 | 改动 |
+|---|---|
+| `config/kuavo/env_cfgs.py` | 新增 `kuavo_s54_rough_blind_env_cfg()`：基于 `_kuavo_s54_base_rough_env_cfg` + EMP 奖励，剥离 depth 传感器/观测/随机化事件，5 帧本体感知堆叠 |
+| `config/kuavo/rl_cfg.py` | 新增 `kuavo_s54_rough_blind_ppo_runner_cfg()`：默认 `MLPModel`，无 CNN encoder，实验名 `kuavo_s54_blind_velocity` |
+| `config/kuavo/__init__.py` | 注册 `Kuavo-S54-Rough-Blind` 任务 |
+
+**验证**：
+- `list_envs.py --keyword S54-Rough-Blind` → 可发现
+- `play.py Kuavo-S54-Rough-Blind --agent zero --num-envs 1` → 正常启动
+
+### feet_height 奖励
+
+**动机**：盲策略无深度相机，无法"看到"障碍物，需要奖励项鼓励抬脚高度，帮助在粗糙地形上自动清除障碍。
+
+**改动**
+
+| 文件 | 改动 |
+|---|---|
+| `mdp/rewards.py` | 新增 `feet_height()`：测量足端 site 世界 Z 高度，离地时超过 `target_height` 的部分线性奖励，用命令幅度门控 |
+| `config/kuavo/env_cfgs.py` | `kuavo_s54_rough_blind_env_cfg()` 中添加 `cfg.rewards["feet_height"]`，`weight=1.0`, `target_height=0.2` |
+
+---
+
+## 2026-07-26 S54 物理参数对齐 depth_loco_param.info + 腰部相机 pitch 修正
+
+### 物理参数对齐
+
+**动机**：`kuavo_s54_constants.py` 的 stiffness/damping/effort_limit 与真机部署使用的 `depth_loco_param.info` 不一致，导致仿真 PD 增益与力矩限制偏离实物。
+
+**来源**：`/home/hitcsc/kuavo-ros-opensource/src/humanoid-control/humanoid_controllers/config/kuavo_v54/rl/depth_loco_param.info`
+
+**改动**（`kuavo_s54_constants.py`）
+
+| 关节 | stiffness(旧→新) | damping(旧→新) | effort_limit(旧→新) |
+|------|------------------|----------------|--------------------|
+| leg_[lr]1 (hip roll) | 60→48 | 6→5 | 101.6→100.0 |
+| leg_[lr]2 (hip yaw) | 60→48 | 6→5 | 56.8→50.5 |
+| leg_[lr]3 (hip pitch) | 80→68 | 6→5 | 105.6→100.0 |
+| leg_[lr]4 (knee) | 95→68 | 6→6(不变) | 224→150.0 |
+| leg_[lr]5 (ankle pitch) | 55→18 | 7.5→7.5(不变) | 91.6→70.0 |
+| leg_[lr]6 (ankle roll) | 55→18 | 7.5→7.5(不变) | 68.4→50.0 |
+| waist_yaw | 40→30 | 4→3 | 81.6→33.0 |
+| zarm_[lr]1 | 20→30 | 3→3(不变) | 52.8→30.0 |
+| zarm_[lr]2 | 20→30 | 3→3(不变) | 60→30.0 |
+| zarm_[lr]3 | 20→15 | 3→3(不变) | 45.6→20.0 |
+| zarm_[lr]4 | 20→30 | 3→3(不变) | 60→30.0 |
+| zarm_[lr]5 | 15→15(不变) | 3→3(不变) | 11→14.1 |
+| zarm_[lr]6 | 15→15(不变) | 3→3(不变) | 11→14.1 |
+| zarm_[lr]7 | 15→15(不变) | 3→3(不变) | 11→14.1 |
+
+**HOME_KEYFRAME 更新**：基础高度 0.925→0.965（匹配 `defaultBaseHeightControl`），腿关节角度对齐 `defaultJointState`（-0.4→-0.24, 0.69→0.5, -0.33→-0.26），手臂从全 0 改为参考 `defaultJointState`（l1=0.126, l2=0.1, l4=-0.27, 对称镜像）。
+
+`KUAVO_S54_ACTION_SCALE` 自动重算（`0.25 × effort_limit / stiffness`），与参考 `actionScaleTest` 一致。
+
+**验证**：`uv run python scripts/play.py Kuavo-S54-Rough-CNN --agent zero --num-envs 1` 启动正常。
+
+---
+
+## 2026-07-26 修正 S54-Rough-CNN 腰部相机 pitch 对齐真实外参
+
+**动机**：S54-Rough-CNN 任务的深度相机 pitch 是 ~34°（继承自旧 S54 默认值），但真实机器人 `waist_camera_link` body 的 `quat=(0.868, 0, 0.497, 0)` 编码了 **59.6°** 俯角（R_y(59.6°)），二者相差约 25.6°，导致仿真中相机看到的场景与真实机器人不一致。
+
+**根因**：`make_kuavo_velocity_env_cfg()` 设定 `CameraSensorCfg.quat = (0.624338, 0.331967, -0.331967, -0.624338)` 编码的是 S54 旧设计 pitch ~34°（0.593 rad）。`_kuavo_s54_base_rough_env_cfg()` 只覆盖了 `pos` 和 `parent_body`，未覆盖 `quat`，导致所有 S54 任务都使用这个偏浅的俯角。
+
+此外 `_kuavo_rough_env_cfg()` 在 `if play:` 块之后添加了 `depth_camera_pitch` 域随机化事件，导致 **play 回放时相机 pitch 也会每 episode 随机化 ±8.6°**，观察到的 extrinsics 不固定。
+
+**改动**
+
+| 文件 | 改动 |
+|---|---|
+| `config/kuavo/env_cfgs.py:_kuavo_rough_env_cfg()` | play 分支新增 `cfg.events.pop("depth_camera_pitch", None)`，回放时相机外参固定 |
+| `config/kuavo/env_cfgs.py:kuavo_s54_rough_cnn_env_cfg()` | 创建后直接设置 `depth_camera.quat = (0.682369, 0.185395, -0.185395, -0.682369)` |
+
+**Quat 推导**
+
+MJLab CameraSensorCfg quat 与 pitch θ 的关系（基于 `q_base = 0.5·(1, 1, -1, -1)` 复合 MuJoCo 光轴变换）：
+
+```
+q(θ) = 0.5·(cos(θ/2)+sin(θ/2), cos(θ/2)-sin(θ/2),
+             -cos(θ/2)+sin(θ/2), -cos(θ/2)-sin(θ/2))
+```
+
+| pitch θ | 验算: w | 验算: x |
+|---------|--------|---------|
+| 34° | 0.5·(cos17°+sin17°) = 0.5·(0.9563+0.2924) = 0.62434 ✓ | 0.5·(0.9563-0.2924) = 0.33195 ✓ |
+| 40° | 0.5·(cos20°+sin20°) = 0.64084 ✓ | 0.5·(cos20°-sin20°) = 0.29888 ✓ |
+| 59.6° | 0.5·(cos29.8°+sin29.8°) = 0.682369 | 0.5·(cos29.8°-sin29.8°) = 0.185395 |
+| 60° | 0.5·(cos30°+sin30°) = 0.6830 ✓ | 0.5·(cos30°-sin30°) = 0.1830 ✓ |
+
+**验证**: `uv run python scripts/play.py Kuavo-S54-Rough-CNN --agent zero --num-envs 1` 启动正常，无报错。
+
+**效果与预期**：
+- 训练时深度相机 EM 域随机化继续生效（pitch 59.6° ± 8.6°），提升对安装角误差的鲁棒性
+- 回放时 pitch 固定为 59.6°，与真实机器人 `waist_camera_link` 外参一致
+
+---
+
+## 2026-07-25 S54 机械模型迁移 + 新增 S54-Rough-CNN 任务
+
+### S54 模型迁移
+
+**动机**：当前项目使用的 S54 机械模型（XML/URDF/常量）与 `kuavo-ros-opensource` 仓库中的正式模型不同步，存在踝关节力矩偏低（57→68.4 N·m）、腰部相机缺失、头部相机结构过简、足部缺少 toe/heel 碰撞体等问题。
+
+**来源**：`/home/hitcsc/kuavo-ros-opensource/src/kuavo_assets/models/biped_s54`
+
+**改动**
+
+| 文件 | 改动 |
+|---|---|
+| `assets/robots/kuavo/biped_s54/xml/biped_s54.xml` | 整体替换。关键差异：踝关节 actuator `ctrlrange` (30→68.4)、腰部新增 `waist_camera_link` body（含 camera）、头部相机重构为 `head_camera_base_link` + `head_camera_depth_link`、新增 `head_radar_link` 和足部 FT sensor、`waist_yaw` body inertial 修正（mass: 20.8448→20.7962） |
+| `assets/robots/kuavo/biped_s54/urdf/biped_s54.urdf` | 整体替换。关键差异：踝关节 effort (30→68.4)、新增足尖/足跟碰撞球体（`ll_foot_toe`, `ll_foot_heel` 等 12 个 link）、uncomment `dummy_link` |
+| `assets/robots/kuavo/biped_s54/meshes/` | 新增 5 个 STL（`head_camera_base`, `head_camera_depth`, `head_radar`, `waist_camera_base`, `waist_camera_depth`） |
+| `assets/robots/kuavo/biped_s54/kuavo_s54_constants.py` | `KUAVO_S54_LEG_6_ACTUATOR.effort_limit`: 57.0→68.4（自动联动 `KUAVO_S54_ACTION_SCALE` 踝关节 scale: 0.259→0.311） |
+| `tasks/velocity/config/kuavo/env_cfgs.py` | `_kuavo_s54_base_rough_env_cfg` 的 `depth_camera_pos`: (0.0987,0,-0.028449)→(0.09538,0,-0.01491)，与新 XML 的 `waist_camera_link` body 对齐 |
+
+**修改后的 S54 腰部相机外参**：
+
+| 参数 | XML（MuJoCo 原始相机） | MJLab CameraSensorCfg（训练/回放用） |
+|---|---|---|
+| 父级 body | `waist_yaw` | `robot/waist_yaw` |
+| 位置 | body: (0.09538, 0, -0.01491) 相对 waist_yaw; 内含 camera: (0.01229, 0.02375, 0.01452) 相对 body | (0.09538, 0.0, -0.01491) — 对应 waist_camera_link body 位置 |
+| 姿态 | body quat (0.868,0,0.497,0) = R_y(~59.6°); camera xyaxes="0 -1 0 0 0 1" | quat (0.624338, 0.331967, -0.331967, -0.624338) — 默认 MJCF 光轴变换 |
+| FOV | 80° | 68.0°（Orbbec Gemini 335L） |
+
+### 新增 Kuavo-S54-Rough-CNN 任务
+
+**动机**：S45-Rough 的 EMP 奖励体系已证明对粗糙地形鲁棒性有效，需迁移到 S54 机器人上配合腰部相机 CNN 视觉策略。
+
+**改动**
+
+| 文件 | 改动 |
+|---|---|
+| `tasks/velocity/config/kuavo/env_cfgs.py` | ① `_apply_s45_emp_rewards()` 新增 `controlled_joints` 参数（默认 `S45_CONTROLLED_JOINTS` 向后兼容） ② 新增 `kuavo_s54_rough_cnn_env_cfg()` |
+| `tasks/velocity/config/kuavo/rl_cfg.py` | 新增 `kuavo_s54_rough_cnn_ppo_runner_cfg()` — CNN encoder, non-shared, init_std=0.5, entropy_coef=5e-3 |
+| `tasks/velocity/config/kuavo/__init__.py` | 注册 `Kuavo-S54-Rough-CNN`，`runner_cls=VelocityOnPolicyRunner` |
+
+**验证**：
+- `list_envs.py --keyword Rough` → 已列出 `Kuavo-S54-Rough-CNN`（#10）
+- `play.py --agent zero` → S54-Rough-CNN、S54-Rough、S54-Head-CNN-Rough、S54-Flat 均正常初始化（terrain、CUDA、sensor context 无误）
+
+---
+
+## 2026-07-25 S45 Distill Fine-tune 漂移修复
+
+**现象**：`2026-07-24_17-03-13` distill student 的平均 BC loss 已降至约 `0.019`，但 play 未稳定复现 teacher 落足；后续 fine-tune 总 reward 提高，实际却出现手臂高抬和足部踩边。
+
+**日志证据与根因**
+
+1. Fine-tune 的 `Loss/behavior` 从 `0.027` 升至 `0.351`，teacher regularizer 从 `0.2` 退火至约 `0.031`，策略已明显离开 teacher。
+2. 配置要求 `init_std=0.15`，但首条日志和 `model_0.pt` 都约为 `0.5`。PPO 加载 distill checkpoint 时暂存的 distribution `state_dict` 与模型参数共享张量引用，actor load 原地覆写后无法恢复配置方差。
+3. Distill 使用腿 `1.5`、手臂 `0.5` 的 action 权重，原 fine-tune 却对 26 维等权，未保护落足相关腿部动作。
+4. `edge_contact` 长期仅约 `-3e-4`，远小于速度跟踪项；原 `5cm x 5cm` 足底网格也只覆盖脚掌中心。
+5. Fine-tune 的 `track_default_arm_pos` 已接近零饱和，`joint_deviation_arms` 恶化至约 `-0.36`，原 `-0.1` L1 成本不足以阻止上肢补偿。
+
+**改动**
+
+| 项目 | 原值 | 新值 |
+|---|---:|---:|
+| PPO distill load std | 实际导入 `0.5` | 深拷贝并保留配置 `0.15` |
+| learning rate | `3e-4` | `1e-4` |
+| entropy coefficient | `1e-3` | `5e-4` |
+| BC coefficient | `0.2 -> 0.02 / 10k` | hold `0.3` 3k，再于 12k 退火到 `0.05` |
+| Fine-tune BC action 权重 | 26 维等权 | 腿 `1.5`，手臂 `0.5` |
+| arm L1 deviation | `-0.1` | `-0.3` |
+| sole edge grid | `3x3`, `0.05x0.05m` | `9x5`, `0.16x0.08m` |
+| edge reward weight | `-0.5` | `-2.0` |
+
+- `edge_contact_penalty` 的高度差改为无量纲 `[0,1]` severity，并增加静态接触成本，避免脚停在边缘时因速度接近零而没有惩罚。
+- `Kuavo-S45-Rough-Distill-Finetune` 改为固定地形分布的 5k 稳定阶段。
+- 新增 `Kuavo-S45-Rough-Distill-Finetune-Curriculum`，用于从第一阶段 PPO checkpoint 继续训练 10k updates。
+- PPO checkpoint 新增 `algorithm_num_updates`，续训时恢复 BC 退火进度；旧 PPO checkpoint 回退使用 `iter + 1`。
+- `scripts/train.py` 加载 checkpoint 时显式使用当前训练 device，允许在 CPU smoke 中读取 GPU 保存的模型。
+- 增加单测覆盖 action 加权、BC hold/decay、distill load 保留 std，以及 PPO resume 恢复 schedule。
+
+**资源影响**：足底 ray 从每脚 9 条增至 45 条，1024 环境约增加 7.4 万条 ray query。需要通过 `Perf/collection_time` 与显存实测决定是否将环境数降到 512。
+
+**训练与验收**：完整两阶段命令及 checkpoint 选择条件见 `doc/s45_distillation_training_guide.md`。旧 fine-tune run 已从错误的 `std=0.5` 出发，不建议继续训练；应从 distill `model_15000.pt` 重新启动。
+
+**验证**：任务发现和两个 fine-tune train/play help 通过；`uv lock --check`、`compileall`、配置断言和 4 个 PPO 回归断言通过。使用 distill `model_15000.pt` 完成 CPU `1 env x 1 update` smoke，实测 `behavior=0.0057`、`behavior_coef=0.3000`、`mean_std=0.15`，固定阶段 curriculum 为 inactive。完整 `pytest` runner 因当前环境未安装 pytest 且网络受限而无法启动。
+
 ## 2026-07-24 Depth-to-Terrain 辅助蒸馏落地
 
 **动机**：进一步核对观测几何后确认，完整 terrain scan 虽然覆盖身后，但 EMP teacher 实际使用的 `teacher_height` 已裁成前方 `7x9`，不含身后区域。原方案仍有两个问题：teacher height 与 student perspective depth 不是同构观测；两侧 global pooling latent 的直接对齐丢失空间位置，不能有效监督落足点。

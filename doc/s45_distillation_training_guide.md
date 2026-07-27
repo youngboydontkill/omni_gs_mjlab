@@ -56,16 +56,45 @@ DAgger-lite 的 teacher intervention probability 在前 `12000` 次 update 内�
 
 不要仅凭 distill 的 `mean_reward` 或 episode length 判断是否学会落足。teacher 接管会直接改善这些曲线，而且 distill reward 不产生梯度。固定命令、固定 terrain seed 的 play 对比更有判断力。
 
-## 5. PPO + BC Fine-tune
+## 5. 两阶段 PPO + BC Fine-tune
 
-选择新的 distill checkpoint 后启动：
+Fine-tune 不再直接开启 terrain curriculum。第一阶段使用与 distill 一致的固定地形分布，让新 critic 收敛，同时保护 BC 初始化：
 
 ```bash
 uv run python scripts/train.py Kuavo-S45-Rough-Distill-Finetune \
-  --checkpoint-file logs/rsl_rl/kuavo_s45_distill_velocity/<run>/model_<iteration>.pt
+  --checkpoint-file logs/rsl_rl/kuavo_s45_distill_velocity/<run>/model_<iteration>.pt \
+  --gpu-ids '[0]' \
+  --enable-nan-guard True \
+  --env.scene.num-envs 1024 \
+  --agent.max-iterations 5001
 ```
 
-fine-tune 阶段的目标是 PPO reward 加退火 teacher action regularizer。BC 系数从 `0.2` 降到 `0.02`，而 reward 经 PPO advantage 真正参与策略更新。`edge_contact`、跌倒、速度跟踪和姿态等 reward 因而能够修正纯 BC 的闭环误差。
+第一阶段确认稳定后，从 PPO checkpoint 进入 curriculum 阶段：
+
+```bash
+uv run python scripts/train.py Kuavo-S45-Rough-Distill-Finetune-Curriculum \
+  --checkpoint-file logs/rsl_rl/kuavo_s45_distill_finetune_velocity/<run>/model_5000.pt \
+  --gpu-ids '[0]' \
+  --enable-nan-guard True \
+  --env.scene.num-envs 1024 \
+  --agent.max-iterations 10001
+```
+
+`--agent.max-iterations` 表示本次额外执行的 update 数。第二阶段会恢复 actor、critic、optimizer、iteration 和 BC 退火进度，不会从 `0.3` 重新开始。
+
+Fine-tune 的目标是 PPO reward 加 teacher action regularizer：
+
+```text
+L = L_PPO + lambda_bc * weighted_huber(student_mean, teacher_action)
+```
+
+- 前 `3000` update 固定 `lambda_bc=0.3`，随后用 `12000` update 退火到 `0.05`。
+- 12 个腿部动作权重为 `1.5`，14 个手臂动作权重为 `0.5`，与 distill 保持一致。
+- 从 distill checkpoint 加载时保留 PPO 配置的 `std=0.15`，不导入 BC 中未训练的 `std=0.5`。
+- 学习率为 `1e-4`，entropy coefficient 为 `5e-4`，降低新 critic 尚未稳定时的策略漂移。
+- `edge_contact` 使用覆盖大部分脚掌的 `9x5` downward ray grid，并具有静态接触成本；手臂 L1 偏离成本为 `-0.3`。
+
+足底 ray 数从每脚 `9` 增至 `45`。`1024` 个环境总计增加约 `7.4` 万条 ray query；如果显存或采集 FPS 明显恶化，先将环境数降到 `512`，不要缩回只覆盖脚掌中心的网格。
 
 查看 student：
 
@@ -75,12 +104,37 @@ uv run python scripts/play.py Kuavo-S45-Rough-Distill \
   --num-envs 1 --viewer viser
 ```
 
-查看 fine-tune policy 时，把任务名换成 `Kuavo-S45-Rough-Distill-Finetune`，checkpoint 指向 `kuavo_s45_distill_finetune_velocity` 对应 run。
+查看第一阶段 policy：
 
-## 6. 调参顺序
+```bash
+uv run python scripts/play.py Kuavo-S45-Rough-Distill-Finetune \
+  --checkpoint-file logs/rsl_rl/kuavo_s45_distill_finetune_velocity/<run>/model_<iteration>.pt \
+  --num-envs 1 --viewer viser
+```
+
+查看 curriculum policy 时，将任务名换成 `Kuavo-S45-Rough-Distill-Finetune-Curriculum`，checkpoint 指向 `kuavo_s45_distill_finetune_curriculum_velocity` 对应 run。
+
+## 6. Fine-tune 验收条件
+
+不要再以总 reward 单独选 checkpoint。每 `500` update 至少检查：
+
+| 指标 | 预期 | 停止条件 |
+|---|---|---|
+| `Policy/mean_std` | 首轮接近 `0.15`，之后缓慢变化 | 首轮仍接近 `0.5` |
+| `Loss/behavior_coef` | 前 3000 update 保持 `0.3` | 提前退火 |
+| `Loss/behavior` | 不持续偏离 BC 基线 | 连续多个 checkpoint 高于约 `0.08` |
+| `Episode_Reward/joint_deviation_arms` | 不持续恶化 | play 出现明显高抬臂 |
+| `Episode_Reward/edge_contact` | 与固定 seed play 的踩边次数同步下降 | 总 reward 上升但踩边增加 |
+| `Episode_Termination/fell_over` | 不高于 BC 固定评估 | curriculum 开启后阶跃上升 |
+
+第一阶段只有在固定 seed 的台阶上行、下行和 tilted-grid play 均不劣于 BC 时，才进入 curriculum。建议保存 BC、第一阶段 `model_3000/5000` 和 curriculum `model_5000/10000` 的相同命令、相同 terrain seed 视频做并排比较。
+
+## 7. 调参顺序
 
 1. 保持 `latent_loss_coef=0.0`，先确认三个 loss 都有限且下降。
 2. 若 behavior 收敛明显变慢，先将 `terrain_reconstruction_loss_coef` 从 `0.10` 降至 `0.05`，不要先提高 BC 学习率。
 3. 若高度重建平滑但台阶边缘仍差，将 `terrain_gradient_loss_coef` 从 `0.05` 提到 `0.10`。
 4. 若 beta 降低后跌倒率陡升，延长 `teacher_intervention_decay_updates`，不要让 teacher 最终接管率高于 `0.05` 来掩盖 student 问题。
 5. 辅助 loss 收敛但 play 落足仍弱时，进入 PPO fine-tune；继续增加重建权重不能替代 reward 驱动的闭环优化。
+6. Fine-tune 的 `Loss/behavior` 先恶化时，延长 hold 或提高 BC 终值；只有 BC 稳定而踩边仍多时，才调 `edge_contact`。
+7. 手臂仍抬高时，先确认 `joint_deviation_arms` 非零且在恶化，再将其从 `-0.3` 调到 `-0.5`；不要靠提高全部 action-rate cost 间接压手臂。

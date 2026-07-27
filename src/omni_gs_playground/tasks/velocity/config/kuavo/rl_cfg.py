@@ -499,16 +499,29 @@ def kuavo_s45_distill_finetune_ppo_runner_cfg() -> dict:
     "teacher_height",
   )
   cfg["algorithm"].update({
-    "learning_rate": 3.0e-4,
-    "entropy_coef": 1.0e-3,
-    "behavior_loss_coef_start": 0.2,
-    "behavior_loss_coef_end": 0.02,
-    "behavior_loss_decay_updates": 10000,
+    "learning_rate": 1.0e-4,
+    "entropy_coef": 5.0e-4,
+    # Preserve the foothold-relevant leg policy while the fresh critic settles.
+    # Keep the coefficient fixed for 3k updates, then decay over 12k updates.
+    "behavior_loss_coef_start": 0.3,
+    "behavior_loss_coef_end": 0.05,
+    "behavior_loss_hold_updates": 3000,
+    "behavior_loss_decay_updates": 12000,
+    "behavior_loss_type": "huber",
+    "behavior_action_weights": (1.5,) * 12 + (0.5,) * 14,
   })
   # Cross-algorithm loading intentionally keeps this configured PPO std rather
   # than the untrained 0.5 std stored by deterministic BC.
   cfg["actor"]["distribution_cfg"]["init_std"] = 0.15
-  cfg["max_iterations"] = 12001
+  cfg["max_iterations"] = 5001
   cfg["save_interval"] = 500
   cfg["experiment_name"] = "kuavo_s45_distill_finetune_velocity"
+  return cfg
+
+
+def kuavo_s45_distill_finetune_curriculum_ppo_runner_cfg() -> dict:
+  """Continue hybrid fine-tuning after the fixed-terrain stabilization phase."""
+  cfg = kuavo_s45_distill_finetune_ppo_runner_cfg()
+  cfg["max_iterations"] = 10001
+  cfg["experiment_name"] = "kuavo_s45_distill_finetune_curriculum_velocity"
   return cfg

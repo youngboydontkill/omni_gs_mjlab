@@ -842,6 +842,20 @@ def kuavo_s54_rough_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   for group in cfg.observations.values():
     group.history_length = 5
 
+  # Feet height bonus: encourage lifting the feet higher during swing, which
+  # helps clear obstacles on rough terrain — the blind policy cannot see them.
+  cfg.rewards["feet_height"] = RewardTermCfg(
+    func=mdp.feet_height,
+    weight=1.0,
+    params={
+      "sensor_name": _S45_FEET_GROUND_SENSOR,
+      "target_height": 0.2,
+      "command_name": "twist",
+      "command_threshold": 0.1,
+      "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITES),
+    },
+  )
+
   return cfg
 
 
