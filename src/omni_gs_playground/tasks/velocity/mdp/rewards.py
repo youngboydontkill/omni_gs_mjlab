@@ -973,14 +973,18 @@ def edge_contact_penalty(
     n_valid = valid.sum(dim=1)
     z_spread = torch.where(n_valid > 0, z_spread, torch.zeros_like(z_spread))
     z_spread = torch.nan_to_num(z_spread, nan=0.0, posinf=0.0, neginf=0.0)
-    height_cue = (z_spread - height_threshold).clamp(min=0.0)
+    # Dimensionless [0, 1] cue: the previous meter-valued residual made this
+    # reward orders of magnitude smaller than velocity tracking.
+    height_cue = ((z_spread - height_threshold) / height_threshold).clamp(
+      min=0.0, max=1.0
+    )
 
     # Normal deviation: fraction of valid rays on a non-flat face.
     dev = (1.0 - normals[..., 2]).clamp(min=0.0)  # [B, N]; 0 when normal is +z
     on_side = valid & (dev > normal_threshold)
     normal_cue = on_side.float().sum(dim=1) / n_valid.clamp(min=1).float()  # [B] in [0,1]
 
-    severity = height_cue + normal_cue * height_threshold
+    severity = torch.maximum(height_cue, normal_cue)
     return torch.nan_to_num(severity, nan=0.0, posinf=0.0, neginf=0.0)  # [B]
 
   sev_l = _severity(raycaster_l)
@@ -1005,8 +1009,41 @@ def edge_contact_penalty(
   speed_l = foot_speed[:, 0] if num > 0 else torch.zeros_like(sev_l)
   speed_r = foot_speed[:, 1] if num > 1 else torch.zeros_like(sev_r)
 
-  pen_l = sev_l * contact_l * (speed_l + eps)
-  pen_r = sev_r * contact_r * (speed_r + eps)
+  # Keep a static-contact cost so a foot parked on a lip is still discouraged;
+  # retain speed scaling to penalize scraping more strongly.
+  contact_speed_floor = 0.1
+  pen_l = sev_l * contact_l * (contact_speed_floor + speed_l + eps)
+  pen_r = sev_r * contact_r * (contact_speed_floor + speed_r + eps)
   return pen_l + pen_r
 
 
+def feet_height(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  target_height: float,
+  command_name: str,
+  command_threshold: float = 0.1,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward feet exceeding a target height during the swing phase.
+
+  For each foot, measures world Z position at the configured sites (typically
+  ``("l_ft_frame", "r_ft_frame")``).  When the foot is airborne (contact sensor
+  ``found == 0``), any height above ``target_height`` contributes linearly to the
+  reward.  Gated by command magnitude so the robot is not rewarded while standing.
+
+  The return value is a *bonus* (positive = better); pair it with a **positive**
+  weight in the config.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  foot_z = asset.data.site_pos_w[:, asset_cfg.site_ids, 2]  # [B, N]
+  assert contact_sensor.data.found is not None
+  in_air = (contact_sensor.data.found == 0).float()  # [B, N]
+
+  excess = torch.clamp(foot_z - target_height, min=0.0)  # [B, N]
+  reward = torch.sum(excess * in_air, dim=1)  # [B]
+
+  cmd_norm = _command_speed_norm(env, command_name)
+  active = (cmd_norm > command_threshold).float()
+  return reward * active

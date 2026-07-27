@@ -817,6 +817,34 @@ def kuavo_s54_rough_cnn_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
+def kuavo_s54_rough_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create S54 rough terrain blind task — proprioception only, no depth camera.
+
+  Builds on the S54 rough base with EMP rewards but strips all depth-related
+  input (sensor, observation terms, camera-pitch randomisation).  The RL model
+  uses ``MLPModel`` with 5-frame stacked proprioception.
+
+  This is the rough-terrain counterpart of ``kuavo_s45_flat_blind_env_cfg``;
+  unlike that flat variant the terrain generator / curriculum remain active.
+  """
+  cfg = _kuavo_s54_base_rough_env_cfg(play=play)
+  _apply_s45_emp_rewards(cfg, controlled_joints=S54_CONTROLLED_JOINTS)
+
+  # Blind: strip depth input (sensor + observations + events).
+  for group in cfg.observations.values():
+    group.terms.pop("depth", None)
+  cfg.scene.sensors = tuple(
+    s for s in (cfg.scene.sensors or ()) if s.name != "depth"
+  )
+  cfg.events.pop("depth_camera_pitch", None)
+
+  # Blind task: stack proprioception history (5-frame observation).
+  for group in cfg.observations.values():
+    group.history_length = 5
+
+  return cfg
+
+
 def kuavo_s45_rough_defm_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """S45 rough task with DeFM-aligned 42x42 depth and split depth obs groups.
 

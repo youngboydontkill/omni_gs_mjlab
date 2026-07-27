@@ -259,6 +259,17 @@ def kuavo_s54_rough_cnn_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   return cfg
 
 
+def kuavo_s54_rough_blind_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the MLP runner configuration for the blind S54 rough task.
+
+  Pure proprioception: ``MLPModel`` (default) consumes only the 1D
+  ``actor`` / ``critic`` observation groups.  No depth encoder.
+  """
+  cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.experiment_name = "kuavo_s54_blind_velocity"
+  return cfg
+
+
 def kuavo_s54_head_cnn_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   """Create the CNN RL runner configuration for the head-controlled S54 task."""
   cnn_cfg = {
