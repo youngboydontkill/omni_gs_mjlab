@@ -873,7 +873,7 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     foot_height_scan,
   )
 
-  actor_depth = cfg.observations["actor"].terms["depth"]
+  actor_depth = cfg.observations["actor_depth"].terms["depth"]
   actor_depth.params.update(flatten=False, normalize=True)
   cfg.observations["actor"] = ObservationGroupCfg(
     terms={
