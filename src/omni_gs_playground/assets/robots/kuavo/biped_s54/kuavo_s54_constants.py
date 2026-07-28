@@ -33,7 +33,8 @@ KUAVO_S54_SOLE_SCAN_CENTER = (0.051, 0.0, 0.0)
 KUAVO_S54_SOLE_SCAN_SIZE = (0.25, 0.10)
 KUAVO_S54_SOLE_SCAN_RESOLUTION = 0.025
 KUAVO_S54_SOLE_SCAN_SHAPE = (5, 11)
-
+# Furthest toe capsule center (0.165 m) plus its 8 mm collision radius.
+KUAVO_S54_TOE_REACH = 0.173
 
 def _add_sole_scan_sites(spec: mujoco.MjSpec) -> None:
   for body_name, site_name in zip(
