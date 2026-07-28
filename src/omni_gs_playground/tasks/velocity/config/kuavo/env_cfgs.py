@@ -881,6 +881,9 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     pattern=GridPatternCfg(size=(1.0, 0.6), resolution=0.05),
     max_distance=2.0,
     exclude_parent_body=True,
+    # Terrain geoms use group 0. Restrict the planning map to terrain so the
+    # downward rays cannot hit S54's group-1 visual meshes on its legs/feet.
+    include_geom_groups=(0,),
   )
   toe_scanner_kwargs = dict(
     ray_alignment="base",
