@@ -37,6 +37,9 @@ from .biped_s54 import (
   KUAVO_S54_SOLE_SCAN_SIZE as KUAVO_S54_SOLE_SCAN_SIZE,
 )
 from .biped_s54 import (
+  KUAVO_S54_TOE_REACH as KUAVO_S54_TOE_REACH,
+)
+from .biped_s54 import (
   get_kuavo_s54_head_robot_cfg as get_kuavo_s54_head_robot_cfg,
 )
 from .biped_s54 import (

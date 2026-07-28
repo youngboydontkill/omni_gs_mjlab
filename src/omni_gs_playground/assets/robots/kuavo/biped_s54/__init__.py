@@ -31,6 +31,9 @@ from .kuavo_s54_constants import (
   KUAVO_S54_SOLE_SCAN_SIZE as KUAVO_S54_SOLE_SCAN_SIZE,
 )
 from .kuavo_s54_constants import (
+  KUAVO_S54_TOE_REACH as KUAVO_S54_TOE_REACH,
+)
+from .kuavo_s54_constants import (
   get_kuavo_s54_head_robot_cfg as get_kuavo_s54_head_robot_cfg,
 )
 from .kuavo_s54_constants import (

@@ -14,6 +14,7 @@ from omni_gs_playground.assets.robots.kuavo import (
   KUAVO_S54_SOLE_SCAN_RESOLUTION,
   KUAVO_S54_SOLE_SCAN_SITE_NAMES,
   KUAVO_S54_SOLE_SCAN_SIZE,
+  KUAVO_S54_TOE_REACH,
   get_kuavo_s45_robot_cfg,
   get_kuavo_s54_head_robot_cfg,
   get_kuavo_s54_robot_cfg,
@@ -881,11 +882,34 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     max_distance=2.0,
     exclude_parent_body=True,
   )
+  toe_scanner_kwargs = dict(
+    ray_alignment="base",
+    pattern=GridPatternCfg(
+      size=(0.0, 0.0),
+      resolution=0.01,
+      direction=(1.0, 0.0, 0.0),
+    ),
+    max_distance=1.0,
+    exclude_parent_body=True,
+    debug_vis=False,
+  )
+  feet_l_forward_scanner = RayCastSensorCfg(
+    name="feet_l_forward_scanner",
+    frame=ObjRef(type="body", name=FOOT_BODIES[0], entity="robot"),
+    **toe_scanner_kwargs,
+  )
+  feet_r_forward_scanner = RayCastSensorCfg(
+    name="feet_r_forward_scanner",
+    frame=ObjRef(type="body", name=FOOT_BODIES[1], entity="robot"),
+    **toe_scanner_kwargs,
+  )
   cfg.scene.sensors = (cfg.scene.sensors or ()) + (
     base_height_scan,
     body_height_scan,
     foot_height_scan,
     foothold_planning_scan,
+    feet_l_forward_scanner,
+    feet_r_forward_scanner,
   )
 
   actor_depth = cfg.observations["actor_depth"].terms["depth"]
@@ -1087,6 +1111,17 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       func=mdp.feet_stumble,
       weight=-2.0,
       params={"sensor_name": "feet_ground_contact"},
+    ),
+    "toe_touch": RewardTermCfg(
+      func=mdp.toe_touch,
+      # SSR velocity tracking is 8x lighter than S45 EMP, so do not copy its -5.0.
+      weight=-1.0,
+      params={
+        "sensor_name_l": feet_l_forward_scanner.name,
+        "sensor_name_r": feet_r_forward_scanner.name,
+        "feet_length": KUAVO_S54_TOE_REACH,
+        "margin": 0.015,
+      },
     ),
     "feet_lateral_distance": RewardTermCfg(
       func=mdp.ssr_feet_lateral_distance,
