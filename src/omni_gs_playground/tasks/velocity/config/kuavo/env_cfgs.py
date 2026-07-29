@@ -856,6 +856,7 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     pattern=GridPatternCfg(size=(0.8, 0.8), resolution=0.1),
     max_distance=2.0,
     exclude_parent_body=True,
+    include_geom_groups=(0,),  # 地形碰撞体几何使用 group 0. S54's group-1 visual meshes on its legs/feet.
   )
   foot_height_scan = RayCastSensorCfg(
     name="ssr_foot_height_scan",
@@ -870,6 +871,7 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ),
     max_distance=1.0,
     exclude_parent_body=True,
+    include_geom_groups=(0,),  # 地形碰撞体几何使用 group 0. S54's group-1 visual meshes on its legs/feet.
   )
   foothold_planning_scan = RayCastSensorCfg(
     name="ssr_foothold_planning_scan",
