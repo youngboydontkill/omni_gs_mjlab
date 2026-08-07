@@ -551,11 +551,12 @@ def kuavo_s45_distill_ppo_runner_cfg() -> dict:
       "gradient_length": 15,
       "learning_rate": 1.0e-3,
       "max_grad_norm": 1.0,
-      # Huber is less sensitive to rare recovery-action outliers. Weight the 12
-      # leg joints above the 14 arm joints so the easy arm targets cannot
-      # dominate the foothold-relevant behavior loss.
+      # Huber is less sensitive to rare recovery-action outliers. Exclude the 14
+      # arm joints from BC loss — the PPO finetune stage uses arm posture rewards
+      # (track_default_arm_pos / joint_deviation_arms) that pull arms to default,
+      # which would conflict with teacher arm swing patterns learned here.
       "loss_type": "huber",
-      "action_loss_weights": (1.5,) * 12 + (0.5,) * 14,
+      "action_loss_weights": (1.5,) * 12 + (0.001,) * 14,
       # The teacher scan and camera depth are not isomorphic views. Keep global
       # latent matching off and reconstruct the local forward terrain instead.
       "latent_loss_coef": 0.0,
@@ -609,12 +610,14 @@ def kuavo_s45_distill_finetune_ppo_runner_cfg() -> dict:
     "entropy_coef": 5.0e-4,
     # Preserve the foothold-relevant leg policy while the fresh critic settles.
     # Keep the coefficient fixed for 3k updates, then decay over 12k updates.
+    # Arm joints are excluded from behavior regularization — they are driven
+    # purely by PPO arm posture rewards (consistent with BC phase exclusion).
     "behavior_loss_coef_start": 0.3,
     "behavior_loss_coef_end": 0.05,
     "behavior_loss_hold_updates": 3000,
     "behavior_loss_decay_updates": 12000,
     "behavior_loss_type": "huber",
-    "behavior_action_weights": (1.5,) * 12 + (0.5,) * 14,
+    "behavior_action_weights": (1.5,) * 12 + (0.0,) * 14,
   })
   # Cross-algorithm loading intentionally keeps this configured PPO std rather
   # than the untrained 0.5 std stored by deterministic BC.

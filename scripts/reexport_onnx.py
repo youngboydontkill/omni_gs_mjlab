@@ -136,21 +136,22 @@ def main():
             print(f"  {name:24s}  dim={str(dim):12s}  total={total:4d}  "
                   f"base={base:3d}  hist={hist}")
 
+        group_dim = sum(
+            (int(math.prod(d)) // (
+                obs_manager.get_term_cfg(group, n).history_length
+                if obs_manager.get_term_cfg(group, n).history_length > 0
+                and obs_manager.get_term_cfg(group, n).flatten_history_dim
+                else 1
+            ))
+            * (obs_manager.get_term_cfg(group, n).history_length
+               if obs_manager.get_term_cfg(group, n).history_length > 0
+               and obs_manager.get_term_cfg(group, n).flatten_history_dim
+               else 1)
+            for n, d in zip(term_names, term_dims)
+        )
+
         # If perm exists, verify the mapping for this group.
         if perm is not None:
-            group_dim = sum(
-                (int(math.prod(d)) // (
-                    obs_manager.get_term_cfg(group, n).history_length
-                    if obs_manager.get_term_cfg(group, n).history_length > 0
-                    and obs_manager.get_term_cfg(group, n).flatten_history_dim
-                    else 1
-                ))
-                * (obs_manager.get_term_cfg(group, n).history_length
-                   if obs_manager.get_term_cfg(group, n).history_length > 0
-                   and obs_manager.get_term_cfg(group, n).flatten_history_dim
-                   else 1)
-                for n, d in zip(term_names, term_dims)
-            )
             perm_slice = perm[offset : offset + group_dim]
             identity = torch.arange(offset, offset + group_dim)
             if not torch.equal(perm_slice, identity):
