@@ -353,6 +353,7 @@ def kuavo_s54_rough_ssr_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
       "reward_weight": 0.5,
       "reward_variance": 0.0625,
       "height_threshold": 0.03,
+      "stable_contact_max_deficiency": 0.25,
       "min_std": 0.02,
       "max_std": 0.25,
       "max_target_distance": 1.5,

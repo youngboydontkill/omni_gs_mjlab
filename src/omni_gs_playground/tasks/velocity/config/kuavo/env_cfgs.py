@@ -36,7 +36,7 @@ from mjlab.sensor import (
   RayCastSensorCfg,
 )
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
-
+from mjlab.terrains.config import flat, ROUGH_TERRAINS_CFG
 from omni_gs_playground.tasks.velocity import mdp
 from omni_gs_playground.tasks.velocity.velocity_env_cfg import make_kuavo_velocity_env_cfg
 
@@ -586,7 +586,7 @@ def _apply_s45_emp_rewards(
     # Keep it as a posture prior, not the dominant task signal.
     "track_default_arm_pos": RewardTermCfg(
       func=mdp.track_default_arm_pos,
-      weight=0.0,
+      weight=1.0,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
         "alpha": 5.0,
@@ -603,7 +603,7 @@ def _apply_s45_emp_rewards(
     # its regularizer stay in proportion after the rebalance.
     "joint_deviation_arms": RewardTermCfg(
       func=mdp.joint_deviation_l1,
-      weight=-0.0,
+      weight=-0.3,
       params={
         "asset_cfg": _scene_cfg(joint_names=arm_joints, preserve_order=True),
       },
@@ -824,11 +824,194 @@ def kuavo_s54_rough_cnn_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
+def _make_s54_ssr_reward_sensors() -> tuple[
+  RayCastSensorCfg,
+  RayCastSensorCfg,
+  RayCastSensorCfg,
+]:
+  """Create the terrain probes used by S54 SSR reward terms."""
+  base_height_scan = RayCastSensorCfg(
+    name="ssr_base_height_scan",
+    frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
+    ray_alignment="world",
+    pattern=GridPatternCfg(size=(0.0, 0.0), resolution=0.01),
+    max_distance=2.0,
+    exclude_parent_body=True,
+  )
+  toe_scanner_kwargs = dict(
+    ray_alignment="base",
+    pattern=GridPatternCfg(
+      size=(0.0, 0.0),
+      resolution=0.01,
+      direction=(1.0, 0.0, 0.0),
+    ),
+    max_distance=1.0,
+    exclude_parent_body=True,
+    debug_vis=False,
+  )
+  feet_l_forward_scanner = RayCastSensorCfg(
+    name="feet_l_forward_scanner",
+    frame=ObjRef(type="body", name=FOOT_BODIES[0], entity="robot"),
+    **toe_scanner_kwargs,
+  )
+  feet_r_forward_scanner = RayCastSensorCfg(
+    name="feet_r_forward_scanner",
+    frame=ObjRef(type="body", name=FOOT_BODIES[1], entity="robot"),
+    **toe_scanner_kwargs,
+  )
+  return base_height_scan, feet_l_forward_scanner, feet_r_forward_scanner
+
+
+def _apply_s54_ssr_rewards(
+  cfg: ManagerBasedRlEnvCfg,
+  *,
+  base_height_sensor_name: str,
+  toe_sensor_name_l: str,
+  toe_sensor_name_r: str,
+) -> None:
+  """In-place: apply the S54 SSR reward table."""
+  controlled = _controlled_joints_cfg(S54_CONTROLLED_JOINTS)
+  feet = SceneEntityCfg("robot", site_names=FOOT_SITES, preserve_order=True)
+
+  cfg.rewards = {
+    "track_linear_velocity": RewardTermCfg(
+      func=mdp.track_linear_velocity,
+      weight=1.0,
+      params={"command_name": "twist", "std": math.sqrt(0.25)},
+    ),
+    "track_angular_velocity": RewardTermCfg(
+      func=mdp.track_angular_velocity,
+      weight=0.8,
+      params={"command_name": "twist", "std": math.sqrt(0.25)},
+    ),
+    "orientation": RewardTermCfg(
+      func=mdp.ssr_orientation_reward,
+      weight=0.5,
+      params={"variance": 0.01},
+    ),
+    "angular_velocity_xy": RewardTermCfg(
+      func=mdp.ssr_angular_velocity_reward,
+      weight=0.25,
+      params={"variance": 0.25},
+    ),
+    "base_height": RewardTermCfg(
+      func=mdp.ssr_base_height_reward,
+      weight=0.4,
+      params={
+        "sensor_name": base_height_sensor_name,
+        "target_height": KUAVO_S54_DEFAULT_BASE_HEIGHT,
+        "variance": 0.01,
+      },
+    ),
+    "action_rate": RewardTermCfg(func=mdp.ssr_action_rate, weight=-0.12),
+    "action_smoothness": RewardTermCfg(
+      func=mdp.ssr_action_smoothness, weight=-0.06
+    ),
+    "joint_velocity": RewardTermCfg(
+      func=mdp.ssr_joint_velocity,
+      weight=-0.96,
+      params={
+        "velocity_limit": KUAVO_S54_JOINT_VELOCITY_LIMIT,
+        "asset_cfg": controlled,
+      },
+    ),
+    "joint_torque": RewardTermCfg(
+      func=mdp.ssr_joint_torque,
+      weight=-0.6,
+      params={
+        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
+        "asset_cfg": controlled,
+      },
+    ),
+    "joint_deviation": RewardTermCfg(
+      func=mdp.ssr_joint_deviation, weight=-1.8, params={"asset_cfg": controlled}
+    ),
+    "joint_position_limits": RewardTermCfg(
+      func=mdp.ssr_joint_position_limit,
+      weight=-1.5,
+      params={"asset_cfg": controlled},
+    ),
+    "joint_velocity_limits": RewardTermCfg(
+      func=mdp.ssr_joint_velocity_limit,
+      weight=-6.0,
+      params={
+        "velocity_limit": KUAVO_S54_JOINT_VELOCITY_LIMIT,
+        "asset_cfg": controlled,
+      },
+    ),
+    "joint_torque_limits": RewardTermCfg(
+      func=mdp.ssr_joint_torque_limit,
+      weight=-6.0,
+      params={
+        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
+        "asset_cfg": controlled,
+      },
+    ),
+    "stand_still": RewardTermCfg(
+      func=mdp.ssr_stand_still,
+      weight=-0.12,
+      params={
+        "command_name": "twist",
+        "command_threshold": 0.15,
+        "asset_cfg": controlled,
+      },
+    ),
+    "single_support": RewardTermCfg(
+      func=mdp.ssr_single_support,
+      weight=0.2,
+      params={
+        "sensor_name": "feet_ground_contact",
+        "command_name": "twist",
+        "command_threshold": 0.15,
+      },
+    ),
+    "impact_velocity": RewardTermCfg(
+      func=mdp.ssr_impact_velocity,
+      weight=-1.3,
+      params={"sensor_name": "feet_ground_contact", "asset_cfg": feet},
+    ),
+    "contact_slippage": RewardTermCfg(
+      func=mdp.ssr_contact_slippage,
+      weight=-0.2,
+      params={"sensor_name": "feet_ground_contact", "asset_cfg": feet},
+    ),
+    "feet_air_time": RewardTermCfg(
+      func=mdp.ssr_excess_air_time,
+      weight=-2.0,
+      params={"sensor_name": "feet_ground_contact", "target": 0.4},
+    ),
+    "feet_stumble": RewardTermCfg(
+      func=mdp.feet_stumble,
+      weight=-2.0,
+      params={"sensor_name": "feet_ground_contact"},
+    ),
+    "toe_touch": RewardTermCfg(
+      func=mdp.toe_touch,
+      # SSR velocity tracking is 8x lighter than S45 EMP, so do not copy its -5.0.
+      weight=-1.0,
+      params={
+        "sensor_name_l": toe_sensor_name_l,
+        "sensor_name_r": toe_sensor_name_r,
+        "feet_length": KUAVO_S54_TOE_REACH,
+        "margin": 0.015,
+      },
+    ),
+    "feet_lateral_distance": RewardTermCfg(
+      func=mdp.ssr_feet_lateral_distance,
+      weight=0.08,
+      params={
+        "minimum_distance": 0.22,
+        "variance": 0.03,
+        "asset_cfg": feet,
+      },
+    ),
+  }
+
+
 def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create the isolated Kuavo-S54 port of SSR (without style rewards)."""
   cfg = _kuavo_s54_base_rough_env_cfg(play=play)
   controlled = _controlled_joints_cfg(S54_CONTROLLED_JOINTS)
-  feet = SceneEntityCfg("robot", site_names=FOOT_SITES, preserve_order=True)
   sole_centers = SceneEntityCfg(
     "robot", site_names=KUAVO_S54_SOLE_SCAN_SITE_NAMES, preserve_order=True
   )
@@ -841,14 +1024,11 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   depth_camera.quat = (0.682369, 0.185395, -0.185395, -0.682369)
   _separate_depth_observations(cfg, normalize=True)
 
-  base_height_scan = RayCastSensorCfg(
-    name="ssr_base_height_scan",
-    frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
-    ray_alignment="world",
-    pattern=GridPatternCfg(size=(0.0, 0.0), resolution=0.01),
-    max_distance=2.0,
-    exclude_parent_body=True,
-  )
+  (
+    base_height_scan,
+    feet_l_forward_scanner,
+    feet_r_forward_scanner,
+  ) = _make_s54_ssr_reward_sensors()
   body_height_scan = RayCastSensorCfg(
     name="ssr_body_height_scan",
     frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
@@ -884,27 +1064,6 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Terrain geoms use group 0. Restrict the planning map to terrain so the
     # downward rays cannot hit S54's group-1 visual meshes on its legs/feet.
     include_geom_groups=(0,),
-  )
-  toe_scanner_kwargs = dict(
-    ray_alignment="base",
-    pattern=GridPatternCfg(
-      size=(0.0, 0.0),
-      resolution=0.01,
-      direction=(1.0, 0.0, 0.0),
-    ),
-    max_distance=1.0,
-    exclude_parent_body=True,
-    debug_vis=False,
-  )
-  feet_l_forward_scanner = RayCastSensorCfg(
-    name="feet_l_forward_scanner",
-    frame=ObjRef(type="body", name=FOOT_BODIES[0], entity="robot"),
-    **toe_scanner_kwargs,
-  )
-  feet_r_forward_scanner = RayCastSensorCfg(
-    name="feet_r_forward_scanner",
-    frame=ObjRef(type="body", name=FOOT_BODIES[1], entity="robot"),
-    **toe_scanner_kwargs,
   )
   cfg.scene.sensors = (cfg.scene.sensors or ()) + (
     base_height_scan,
@@ -1003,154 +1162,71 @@ def kuavo_s54_rough_ssr_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     enable_corruption=False,
   )
 
-  cfg.rewards = {
-    "track_linear_velocity": RewardTermCfg(
-      func=mdp.track_linear_velocity,
-      weight=1.0,
-      params={"command_name": "twist", "std": math.sqrt(0.25)},
-    ),
-    "track_angular_velocity": RewardTermCfg(
-      func=mdp.track_angular_velocity,
-      weight=0.8,
-      params={"command_name": "twist", "std": math.sqrt(0.25)},
-    ),
-    "orientation": RewardTermCfg(
-      func=mdp.ssr_orientation_reward,
-      weight=0.5,
-      params={"variance": 0.01},
-    ),
-    "angular_velocity_xy": RewardTermCfg(
-      func=mdp.ssr_angular_velocity_reward,
-      weight=0.25,
-      params={"variance": 0.25},
-    ),
-    "base_height": RewardTermCfg(
-      func=mdp.ssr_base_height_reward,
-      weight=0.4,
-      params={
-        "sensor_name": base_height_scan.name,
-        "target_height": KUAVO_S54_DEFAULT_BASE_HEIGHT,
-        "variance": 0.01,
-      },
-    ),
-    "action_rate": RewardTermCfg(func=mdp.ssr_action_rate, weight=-0.12),
-    "action_smoothness": RewardTermCfg(
-      func=mdp.ssr_action_smoothness, weight=-0.06
-    ),
-    "joint_velocity": RewardTermCfg(
-      func=mdp.ssr_joint_velocity,
-      weight=-0.96,
-      params={
-        "velocity_limit": KUAVO_S54_JOINT_VELOCITY_LIMIT,
-        "asset_cfg": controlled,
-      },
-    ),
-    "joint_torque": RewardTermCfg(
-      func=mdp.ssr_joint_torque,
-      weight=-0.6,
-      params={
-        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
-        "asset_cfg": controlled,
-      },
-    ),
-    "joint_deviation": RewardTermCfg(
-      func=mdp.ssr_joint_deviation, weight=-1.8, params={"asset_cfg": controlled}
-    ),
-    "joint_position_limits": RewardTermCfg(
-      func=mdp.ssr_joint_position_limit,
-      weight=-1.5,
-      params={"asset_cfg": controlled},
-    ),
-    "joint_velocity_limits": RewardTermCfg(
-      func=mdp.ssr_joint_velocity_limit,
-      weight=-6.0,
-      params={
-        "velocity_limit": KUAVO_S54_JOINT_VELOCITY_LIMIT,
-        "asset_cfg": controlled,
-      },
-    ),
-    "joint_torque_limits": RewardTermCfg(
-      func=mdp.ssr_joint_torque_limit,
-      weight=-6.0,
-      params={
-        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
-        "asset_cfg": controlled,
-      },
-    ),
-    "stand_still": RewardTermCfg(
-      func=mdp.ssr_stand_still,
-      weight=-0.12,
-      params={
-        "command_name": "twist",
-        "command_threshold": 0.15,
-        "asset_cfg": controlled,
-      },
-    ),
-    "single_support": RewardTermCfg(
-      func=mdp.ssr_single_support,
-      weight=0.2,
-      params={
-        "sensor_name": "feet_ground_contact",
-        "command_name": "twist",
-        "command_threshold": 0.15,
-      },
-    ),
-    "impact_velocity": RewardTermCfg(
-      func=mdp.ssr_impact_velocity,
-      weight=-1.3,
-      params={"sensor_name": "feet_ground_contact", "asset_cfg": feet},
-    ),
-    "contact_slippage": RewardTermCfg(
-      func=mdp.ssr_contact_slippage,
-      weight=-0.2,
-      params={"sensor_name": "feet_ground_contact", "asset_cfg": feet},
-    ),
-    "feet_air_time": RewardTermCfg(
-      func=mdp.ssr_excess_air_time,
-      weight=-2.0,
-      params={"sensor_name": "feet_ground_contact", "target": 0.4},
-    ),
-    "feet_stumble": RewardTermCfg(
-      func=mdp.feet_stumble,
-      weight=-2.0,
-      params={"sensor_name": "feet_ground_contact"},
-    ),
-    "toe_touch": RewardTermCfg(
-      func=mdp.toe_touch,
-      # SSR velocity tracking is 8x lighter than S45 EMP, so do not copy its -5.0.
-      weight=-1.0,
-      params={
-        "sensor_name_l": feet_l_forward_scanner.name,
-        "sensor_name_r": feet_r_forward_scanner.name,
-        "feet_length": KUAVO_S54_TOE_REACH,
-        "margin": 0.015,
-      },
-    ),
-    "feet_lateral_distance": RewardTermCfg(
-      func=mdp.ssr_feet_lateral_distance,
-      weight=0.08,
-      params={
-        "minimum_distance": 0.22,
-        "variance": 0.03,
-        "asset_cfg": feet,
-      },
-    ),
-  }
+  _apply_s54_ssr_rewards(
+    cfg,
+    base_height_sensor_name=base_height_scan.name,
+    toe_sensor_name_l=feet_l_forward_scanner.name,
+    toe_sensor_name_r=feet_r_forward_scanner.name,
+  )
   return cfg
 
 
 def kuavo_s54_rough_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """Create S54 rough terrain blind task — proprioception only, no depth camera.
 
-  Builds on the S54 rough base with EMP rewards but strips all depth-related
+  Builds on the S54 rough base with SSR rewards but strips all depth-related
   input (sensor, observation terms, camera-pitch randomisation).  The RL model
   uses ``MLPModel`` with 5-frame stacked proprioception.
 
   This is the rough-terrain counterpart of ``kuavo_s45_flat_blind_env_cfg``;
   unlike that flat variant the terrain generator / curriculum remain active.
   """
+
   cfg = _kuavo_s54_base_rough_env_cfg(play=play)
-  _apply_s45_emp_rewards(cfg, controlled_joints=S54_CONTROLLED_JOINTS)
+  (
+    base_height_scan,
+    feet_l_forward_scanner,
+    feet_r_forward_scanner,
+  ) = _make_s54_ssr_reward_sensors()
+  assert cfg.scene.terrain is not None
+  gen = cfg.scene.terrain.terrain_generator
+  assert gen is not None
+  import mjlab.terrains as terrain_gen
+  gen.sub_terrains = {
+    "flat": flat(proportion=0.7),
+    "stairs_up": terrain_gen.BoxPyramidStairsTerrainCfg(
+      proportion=0.1,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+    "stairs_down": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+      proportion=0.1,
+      step_height_range=(0.02, 0.14),
+      step_width=0.32,
+      platform_width=2.0,
+      border_width=0.8,
+    ),
+    "slope_up": terrain_gen.HfPyramidSlopedTerrainCfg(
+      proportion=0.1,
+      slope_range=(0.0, 0.35),
+      platform_width=2.0,
+      border_width=0.25,
+      inverted=False,
+    ),
+  }
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (
+    base_height_scan,
+    feet_l_forward_scanner,
+    feet_r_forward_scanner,
+  )
+  _apply_s54_ssr_rewards(
+    cfg,
+    base_height_sensor_name=base_height_scan.name,
+    toe_sensor_name_l=feet_l_forward_scanner.name,
+    toe_sensor_name_r=feet_r_forward_scanner.name,
+  )
 
   # Blind: strip depth input (sensor + observations + events).
   for group in cfg.observations.values():
@@ -1163,20 +1239,6 @@ def kuavo_s54_rough_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   # Blind task: stack proprioception history (5-frame observation).
   for group in cfg.observations.values():
     group.history_length = 5
-
-  # Feet height bonus: encourage lifting the feet higher during swing, which
-  # helps clear obstacles on rough terrain — the blind policy cannot see them.
-  cfg.rewards["feet_height"] = RewardTermCfg(
-    func=mdp.feet_height,
-    weight=1.0,
-    params={
-      "sensor_name": _S45_FEET_GROUND_SENSOR,
-      "target_height": 0.2,
-      "command_name": "twist",
-      "command_threshold": 0.1,
-      "asset_cfg": SceneEntityCfg("robot", site_names=FOOT_SITES),
-    },
-  )
 
   return cfg
 
