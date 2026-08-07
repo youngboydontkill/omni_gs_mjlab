@@ -77,6 +77,7 @@ uv run --with pytest pytest packages/rsl_rl/tests/algorithms/test_ppo.py::<test_
 | Kuavo-S54-Head-CNN-Rough | `VelocityOnPolicyRunner` | CNN | 带可控头部的 S54 |
 | Kuavo-S54-Head-MoE-Rough | `VelocityOnPolicyRunner` | MoE(4 experts) | MoE-Loco 风格门控专家 |
 | Kuavo-S54-Flat | `VelocityOnPolicyRunner` | MLP | 平地 S54 |
+| Kuavo-S54-AME | `VelocityOnPolicyRunner` | AMEModel | 地形高程图 AME 编码器（33×21），无深度相机；训练地形 AME ROUGH_TERRAINS_CFG（8 类，含自定义同心间隙）见 `tasks/velocity/terrains/ame_terrains.py` |
 | Unitree-G1-Flat | `VelocityOnPolicyRunner` | MLP | G1 机器人平地 |
 | Unitree-G1-Rough | `VelocityOnPolicyRunner` | MLP | G1 机器人粗糙地形 |
 
@@ -232,3 +233,4 @@ S45 与 S54 动作 scale/执行器参数独立；S54 带可控头部（需 `head
 | `terrain_curriculum_stuck.md` | 地形课程 stuck 根因分析与 P0 复盘 |
 | `joint_ordering.md` | 各机器人关节顺序说明 |
 | `reward_migrate.md` / `toe_touch_migrate.md` | 奖励迁移与足端碰撞修复记录 |
+| `ame/migrate.md` | AME 迁移到 Kuavo-S54-AME 的全量改动总结与 S54-Rough 奖励对比 |

@@ -2,6 +2,7 @@
 
 import math
 from copy import deepcopy
+from dataclasses import replace
 
 from omni_gs_playground.assets.robots.kuavo import (
   KUAVO_S45_ACTION_SCALE,
@@ -38,6 +39,7 @@ from mjlab.sensor import (
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
 from mjlab.terrains.config import flat, ROUGH_TERRAINS_CFG
 from omni_gs_playground.tasks.velocity import mdp
+from omni_gs_playground.tasks.velocity.terrains import AME_ROUGH_TERRAINS_CFG
 from omni_gs_playground.tasks.velocity.velocity_env_cfg import make_kuavo_velocity_env_cfg
 
 ROOT_BODY = "base_link"
@@ -1240,6 +1242,276 @@ def kuavo_s54_rough_blind_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   for group in cfg.observations.values():
     group.history_length = 5
 
+  return cfg
+
+
+# ---------------------------------------------------------------------------
+# S54 AME (Attention-based Map Encoder) port (AME-Locomotion / MIGRATION_GUIDE).
+# ---------------------------------------------------------------------------
+
+_AME_UNDESIRED_CONTACT_SENSOR = "undesired_body_contact"
+
+
+def _apply_s54_ame_rewards(cfg: ManagerBasedRlEnvCfg) -> None:
+  """In-place: replace ``cfg.rewards`` with the AME reward table.
+
+  Ports AME-Locomotion's ``RewardsCfg`` / ``G1RoughEnvCfg.__post_init__`` (the
+  non-FINETUNE weight set) to Kuavo-S54. Reward *design and weights* are kept;
+  only body/joint names are remapped:
+
+  * feet = ``leg_[lr]6_link``; the undesired-contact sensor covers all non-foot
+    bodies incl. the S54 ``waist_yaw`` body; hip yaw/roll = ``leg_[lr][12]_joint``;
+    hip pitch (for cross-body coordination) = ``leg_[lr]3_joint``; shoulder
+    pitch = ``zarm_[lr]1_joint``; arms = ``zarm_[lr][1-7]_joint``; waist =
+    ``waist_yaw_joint``.
+  """
+  controlled = _controlled_joints_cfg(S54_CONTROLLED_JOINTS)
+
+  # Non-foot body contact sensor (incl. the S54 waist body).
+  undesired_body_contact_cfg = ContactSensorCfg(
+    name=_AME_UNDESIRED_CONTACT_SENSOR,
+    primary=ContactMatch(
+      mode="body",
+      pattern=(
+        r"leg_[lr][1-5]_link",
+        "base_link",
+        "waist_yaw",
+        r"zarm_[lr][1-7]_link",
+      ),
+      entity="robot",
+    ),
+    secondary=None,
+    fields=("found", "force"),
+    reduce="netforce",
+    num_slots=1,
+    history_length=4,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (undesired_body_contact_cfg,)
+
+  cfg.rewards = {
+    "is_terminated": RewardTermCfg(func=mdp.is_terminated, weight=-200.0),
+    "track_linear_velocity": RewardTermCfg(
+      func=mdp.track_linear_velocity,
+      weight=2.0,
+      params={"command_name": "twist", "std": math.sqrt(0.25)},
+    ),
+    "track_angular_velocity": RewardTermCfg(
+      func=mdp.track_angular_velocity,
+      weight=3.0,
+      params={"command_name": "twist", "std": math.sqrt(0.25)},
+    ),
+    "ang_vel_xy_l2": RewardTermCfg(
+      func=mdp.body_angular_velocity_penalty,
+      weight=-0.05,
+      params={"asset_cfg": _scene_cfg(body_names=(ROOT_BODY,))},
+    ),
+    "body_orientation_l2": RewardTermCfg(
+      func=mdp.body_orientation_l2,
+      weight=-2.0,
+      params={"asset_cfg": _scene_cfg(body_names=(ROOT_BODY,))},
+    ),
+    "undesired_contacts": RewardTermCfg(
+      func=mdp.undesired_contacts,
+      weight=-1.0,
+      params={"sensor_name": _AME_UNDESIRED_CONTACT_SENSOR, "threshold": 1.0},
+    ),
+    "dof_torques_l2": RewardTermCfg(
+      func=mdp.joint_torques_l2, weight=-1.5e-7, params={"asset_cfg": controlled}
+    ),
+    "dof_acc_l2": RewardTermCfg(
+      func=mdp.joint_acc_l2, weight=-1.25e-7, params={"asset_cfg": controlled}
+    ),
+    "dof_vel_l2": RewardTermCfg(
+      func=mdp.joint_vel_l2, weight=-0.001, params={"asset_cfg": controlled}
+    ),
+    "dof_pos_limits": RewardTermCfg(
+      func=mdp.joint_pos_limits, weight=-1.0, params={"asset_cfg": controlled}
+    ),
+    "dof_torques_limits": RewardTermCfg(
+      func=mdp.applied_torque_limits,
+      weight=-0.01,
+      params={
+        "asset_cfg": _scene_cfg(actuator_names=S54_CONTROLLED_JOINTS),
+        "effort_limits": KUAVO_S54_CONTROLLED_JOINT_EFFORT_LIMITS,
+      },
+    ),
+    "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.01),
+    "feet_air_time": RewardTermCfg(
+      func=mdp.feet_air_time_positive_biped,
+      weight=0.25,
+      params={
+        "command_name": "twist",
+        "threshold": 0.6,
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "command_threshold": 0.01,
+      },
+    ),
+    "feet_air_time_variance": RewardTermCfg(
+      func=mdp.air_time_variance_penalty,
+      weight=-0.7,
+      params={"sensor_name": _S45_FEET_GROUND_SENSOR},
+    ),
+    "feet_slide": RewardTermCfg(
+      func=mdp.feet_slide,
+      weight=-0.1,
+      params={
+        "sensor_name": _S45_FEET_GROUND_SENSOR,
+        "asset_cfg": _scene_cfg(body_names=FOOT_BODIES),
+      },
+    ),
+    "feet_stumble": RewardTermCfg(
+      func=mdp.feet_stumble,
+      weight=-2.0,
+      params={"sensor_name": _S45_FEET_GROUND_SENSOR},
+    ),
+    "feet_too_near": RewardTermCfg(
+      func=mdp.feet_too_near_humanoid,
+      weight=-1.0,
+      params={"asset_cfg": _scene_cfg(), "threshold": 0.2, "feet_names": FOOT_BODIES},
+    ),
+    "joint_coordination": RewardTermCfg(
+      func=mdp.joint_coordination_rel,
+      weight=-0.2,
+      params={
+        "asset_cfg": _scene_cfg(),
+        "coord_joints": [
+          ["leg_l3_joint", "zarm_r1_joint"],
+          ["leg_r3_joint", "zarm_l1_joint"],
+        ],
+        "coord_signs": [[1.0, 1.0], [1.0, 1.0]],
+      },
+    ),
+    "joint_deviation_hip": RewardTermCfg(
+      func=mdp.joint_deviation_l1,
+      weight=-0.1,
+      params={
+        "asset_cfg": _scene_cfg(
+          joint_names=(r"leg_[lr][12]_joint",), preserve_order=True
+        ),
+      },
+    ),
+    "joint_deviation_arms": RewardTermCfg(
+      func=mdp.joint_deviation_l1,
+      weight=-0.3,
+      params={
+        "asset_cfg": _scene_cfg(
+          joint_names=(r"zarm_[lr][1-7]_joint",), preserve_order=True
+        ),
+      },
+    ),
+    "joint_deviation_waists": RewardTermCfg(
+      func=mdp.joint_deviation_l1,
+      weight=-1.0,
+      params={
+        "asset_cfg": _scene_cfg(
+          joint_names=("waist_yaw_joint",), preserve_order=True
+        ),
+      },
+    ),
+  }
+
+
+def kuavo_s54_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Create the S54 AME (Attention-based Map Encoder) task.
+
+  Ports AME-Locomotion's proprioception + terrain-elevation-map policy to
+  Kuavo-S54 (MIGRATION_GUIDE). No depth camera: the AME network consumes the
+  flat ``actor`` / ``critic`` observation with the ``elevation_map`` grid at
+  the tail (``height_scan`` must stay the last term of each group). The
+  training terrain is AME's ``ROUGH_TERRAINS_CFG`` (8 sub-terrains: stairs,
+  boxes, rough, slopes, stepping stones and custom concentric gaps).
+  """
+  cfg = _kuavo_s54_base_rough_env_cfg(play=play)
+
+  # The dense AME terrain (box grids, stepping-stone floors, hfield meshes)
+  # produces more static-static contacts than the base rough terrain, which
+  # overflowed the inherited nconmax=128 (solver requires >= 217 on the gaps
+  # tile). Bump per-world contact budget; peak grows with terrain density.
+  cfg.sim.nconmax = 81
+
+  # --- AME training terrain: mirror AME-Locomotion's ROUGH_TERRAINS_CFG ---
+  # Replaces the inherited TEST_DEPTH_TERRAINS_CFG with the 8 sub-terrain AME
+  # grid (custom HfConcentricGapTerrainCfg lives in the terrains subpackage).
+  # ``replace`` keeps the module-level preset shared across task factories.
+  if play:
+    cfg.scene.terrain.terrain_generator = replace(
+      AME_ROUGH_TERRAINS_CFG,
+      curriculum=False,
+      num_rows=5,
+      num_cols=5,
+      border_width=10.0,
+    )
+  else:
+    cfg.scene.terrain.terrain_generator = replace(
+      AME_ROUGH_TERRAINS_CFG, curriculum=True
+    )
+
+  # --- Replace the depth camera with the AME terrain grid (elevation map) ---
+  terrain_scan = RayCastSensorCfg(
+    name="terrain_scan",
+    frame=ObjRef(type="body", name=ROOT_BODY, entity="robot"),
+    ray_alignment="yaw",
+    # AME default grid: 1.6 x 1.0 m at 0.05 m -> 33 x 21 rays (map_scan_dim).
+    pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.05),
+    max_distance=5.0,
+    exclude_parent_body=True,
+    # Terrain geoms use group 0; exclude the robot's group-1 visual meshes.
+    include_geom_groups=(0,),
+    debug_vis=True,
+  )
+  cfg.scene.sensors = tuple(
+    s for s in (cfg.scene.sensors or ()) if s.name != "depth"
+  ) + (terrain_scan,)
+  for group in cfg.observations.values():
+    group.terms.pop("depth", None)
+  cfg.events.pop("depth_camera_pitch", None)
+
+  # --- Rebuild actor/critic observations in the AME layout: height_scan LAST ---
+  actor = cfg.observations["actor"]
+  critic = cfg.observations["critic"]
+
+  def _height_term(noise: bool) -> ObservationTermCfg:
+    return ObservationTermCfg(
+      func=mdp.elevation_map,
+      params={"sensor_name": terrain_scan.name, "noise": noise},
+    )
+
+  actor.terms = {
+    "base_ang_vel": actor.terms["base_ang_vel"],
+    "projected_gravity": actor.terms["projected_gravity"],
+    "command": actor.terms["command"],
+    "joint_pos": actor.terms["joint_pos"],
+    "joint_vel": actor.terms["joint_vel"],
+    "actions": actor.terms["actions"],
+    "height_scan": _height_term(noise=not play),
+  }
+  critic.terms = {
+    "base_lin_vel": critic.terms["base_lin_vel"],
+    "base_ang_vel": critic.terms["base_ang_vel"],
+    "projected_gravity": critic.terms["projected_gravity"],
+    "command": critic.terms["command"],
+    "joint_pos": critic.terms["joint_pos"],
+    "joint_vel": critic.terms["joint_vel"],
+    "actions": critic.terms["actions"],
+    "height_scan": _height_term(noise=False),
+  }
+  # AME has no observation history.
+  actor.history_length = 1
+  critic.history_length = 1
+
+  # --- Commands: forward + heading + turning (AME range) ---
+  twist_cmd = cfg.commands["twist"]
+  assert isinstance(twist_cmd, UniformVelocityCommandCfg)
+  twist_cmd.heading_command = True
+  twist_cmd.ranges.heading = (-math.pi, math.pi)
+  twist_cmd.ranges.lin_vel_x = (0.0, 1.5)
+  twist_cmd.ranges.lin_vel_y = (0.0, 0.0)
+  twist_cmd.ranges.ang_vel_z = (-1.0, 1.0)
+  twist_cmd.rel_standing_envs = 0.0
+  twist_cmd.rel_heading_envs = 1.0
+
+  # --- AME reward table ---
+  _apply_s54_ame_rewards(cfg)
   return cfg
 
 

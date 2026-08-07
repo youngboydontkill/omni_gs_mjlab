@@ -874,6 +874,84 @@ def joint_deviation_l1(
   return torch.sum(torch.abs(diff), dim=1)
 
 
+# ---------------------------------------------------------------------------
+# Rewards ported from AME-Locomotion (Attention-based Map Encoder).
+# ---------------------------------------------------------------------------
+
+
+def air_time_variance_penalty(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+) -> torch.Tensor:
+  """Penalize variance in the air/contact time across feet (AME).
+
+  Mirrors AME-Locomotion's ``air_time_variance_penalty``: penalizes the two
+  feet spending very different durations in the air or on the ground. Uses the
+  per-phase durations accumulated by the contact sensor (``track_air_time``),
+  clipped to 0.5 s per phase.
+  """
+  sensor: ContactSensor = env.scene[sensor_name]
+  assert sensor.data.last_air_time is not None, (
+    f"Sensor '{sensor_name}' must have track_air_time=True for "
+    "air_time_variance_penalty."
+  )
+  last_air_time = torch.clip(sensor.data.last_air_time, max=0.5)
+  last_contact_time = torch.clip(sensor.data.last_contact_time, max=0.5)
+  return torch.var(last_air_time, dim=1) + torch.var(last_contact_time, dim=1)
+
+
+def joint_coordination_rel(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+  coord_joints: list[list[str]] | None = None,
+  coord_signs: list[list[float]] | None = None,
+) -> torch.Tensor:
+  """Penalize relative-motion disagreement across paired joints (AME).
+
+  For each ``(joint_a, joint_b)`` pair, computes the squared difference of
+  their deviation-from-default (each scaled by the corresponding entry of
+  ``coord_signs``), averaged over the pairs. Used for cross-body coordination
+  (e.g. left hip pitch ↔ right shoulder pitch).
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  if coord_joints is None:
+    coord_joints = []
+  if coord_signs is None:
+    coord_signs = [[1.0, 1.0]] * len(coord_joints)
+
+  reward = torch.zeros(env.num_envs, device=env.device)
+  for pair, signs in zip(coord_joints, coord_signs):
+    joint1_id = asset.find_joints(pair[0])[0][0]
+    joint2_id = asset.find_joints(pair[1])[0][0]
+    joint1_rel = (
+      asset.data.joint_pos[:, joint1_id]
+      - asset.data.default_joint_pos[:, joint1_id]
+    )
+    joint2_rel = (
+      asset.data.joint_pos[:, joint2_id]
+      - asset.data.default_joint_pos[:, joint2_id]
+    )
+    coord_error = torch.square(joint1_rel * signs[0] - joint2_rel * signs[1])
+    reward += coord_error
+  return reward / max(len(coord_joints), 1)
+
+
+def applied_torque_limits(
+  env: ManagerBasedRlEnv,
+  effort_limits: tuple[float, ...],
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize applied actuator torque exceeding the effort limit (AME).
+
+  Mirrors AME-Locomotion's ``applied_torque_limits`` (``dof_torques_limits``):
+  counts actuators whose applied torque magnitude exceeds its effort limit.
+  """
+  asset: Entity = env.scene[asset_cfg.name]
+  effort = torch.abs(asset.data.actuator_force[:, asset_cfg.actuator_ids])
+  limits = effort.new_tensor(effort_limits)
+  return (effort > limits).float().sum(dim=1)
+
+
 def undesired_contacts(
   env: ManagerBasedRlEnv,
   sensor_name: str,

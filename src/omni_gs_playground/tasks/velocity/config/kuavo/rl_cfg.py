@@ -41,6 +41,19 @@ class RslRlSsrModelCfg(RslRlModelCfg):
 
 
 @dataclass
+class RslRlAmeModelCfg(RslRlModelCfg):
+  """RSL-RL model configuration with AME terrain-encoder options.
+
+  ``AMEModel`` consumes the flat ``actor`` / ``critic`` observation groups
+  (proprioception + elevation map at the tail); ``ame_cfg`` configures the
+  terrain encoder (``map_scan_dim``, ``mha_dim``, ``num_heads``,
+  ``cnn_downsample``, ``attach_global``).
+  """
+
+  ame_cfg: dict[str, Any] | None = None
+
+
+@dataclass
 class RslRlSsrPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
   """PPO configuration carrying SSR's bilateral data augmentation."""
 
@@ -362,6 +375,47 @@ def kuavo_s54_rough_ssr_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
   cfg.num_steps_per_env = 24
   cfg.max_iterations = 20001
   cfg.experiment_name = "kuavo_s54_rough_ssr"
+  return cfg
+
+
+def kuavo_s54_ame_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+  """Create the AME (Attention-based Map Encoder) runner for the S54 task.
+
+  Both actor and critic use ``AMEModel`` consuming the single flat ``actor`` /
+  ``critic`` observation groups (proprioception + elevation map at the tail).
+  The terrain encoder (CNN + MHA) is shared between actor and critic
+  (``share_cnn_encoders=True``), matching the source ``ActorCriticEncoder``
+  which shares ``map_cnn`` / ``mha`` across branches.  AME applies no
+  observation normalization to the map (``obs_normalization=False``), and uses
+  the source's scalar-Gaussian std (``init_std=1.0``) and entropy 0.008.
+  """
+  ame_cfg = {
+    "map_scan_dim": (33, 21, 3),
+    "mha_dim": 64,
+    "num_heads": 16,
+    "cnn_downsample": True,
+    "attach_global": False,
+  }
+  cfg = _kuavo_base_ppo_runner_cfg()
+  cfg.actor = RslRlAmeModelCfg(
+    class_name="AMEModel",
+    hidden_dims=cfg.actor.hidden_dims,
+    activation=cfg.actor.activation,
+    obs_normalization=False,
+    distribution_cfg=cfg.actor.distribution_cfg,
+    ame_cfg=ame_cfg,
+  )
+  cfg.critic = RslRlAmeModelCfg(
+    class_name="AMEModel",
+    hidden_dims=cfg.critic.hidden_dims,
+    activation=cfg.critic.activation,
+    obs_normalization=False,
+    ame_cfg=ame_cfg,
+  )
+  cfg.algorithm.share_cnn_encoders = True
+  cfg.algorithm.entropy_coef = 0.008
+  # Default obs_groups = {"actor": ("actor",), "critic": ("critic",)}.
+  cfg.experiment_name = "kuavo_s54_ame_velocity"
   return cfg
 
 

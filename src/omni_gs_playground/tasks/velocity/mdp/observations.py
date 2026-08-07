@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor, RayCastSensor
+from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat
 
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
@@ -433,3 +434,64 @@ def teacher_height_valid_obs(
     valid = sensor.data.distances >= 0
     valid = valid.view(-1, 11, 17)[:, 2:9, 8:17]
     return valid.reshape(-1, 63).float()
+
+
+def elevation_map(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "terrain_scan",
+    noise: bool = False,
+    z_min: float = -1.2,
+    z_max: float = 0.0,
+) -> torch.Tensor:
+    """Terrain elevation map as per-ray 3-D coordinates in the robot-yaw frame.
+
+    Ported from AME-Locomotion's ``elevation_map`` (MIGRATION_GUIDE §3/§4): for
+    each ray of the height scanner the world hit point is transformed into the
+    sensor frame keeping only its yaw (``ray_alignment="yaw"``), giving
+    ``[x, y, z]`` per ray with ``z`` measured downward from the base link
+    (negative below the frame). Missed rays are treated as deep holes
+    (``z = z_min``) and everything is clamped to ``[z_min, z_max]``.
+
+    Output is ``[B, N*3]`` (per-ray x,y,z contiguous) — the AME model reshapes
+    it to ``(W, L, 3)``, matching the mjlab ray layout (W-major rows, x fastest,
+    consistent with :func:`~mjlab.envs.mdp.observations.height_scan`).
+
+    Args:
+        env: The RL environment.
+        sensor_name: Name of the single-frame ``RayCastSensor`` (e.g.
+            ``"terrain_scan"`` attached to the base link).
+        noise: Add per-ray Gaussian height noise (std 3 cm) to the map — a
+            simplified stand-in for the source's per-reset z-offset + Gaussian,
+            since mjlab observation terms are stateless.
+        z_min / z_max: Clamp range for the downward heights.
+
+    Returns:
+        ``[B, N*3]`` elevation map.
+    """
+    sensor: RayCastSensor = env.scene[sensor_name]
+    data = sensor.data
+    batch = data.distances.shape[0]
+    n_rays = sensor.num_rays_per_frame
+
+    # Single-frame sensor (e.g. on base_link): frame origin/rotation per env.
+    relative_pos_w = data.hit_pos_w - data.frame_pos_w  # [B, N, 3] - [B, 1, 3]
+    frame_quat = data.frame_quat_w[:, 0]  # [B, 4]
+
+    yaw = yaw_quat(frame_quat)  # [B, 4]
+    yaw_exp = yaw.unsqueeze(1).expand(batch, n_rays, 4).reshape(batch * n_rays, 4)
+    rel_flat = relative_pos_w.reshape(batch * n_rays, 3)
+    sensor_coords = quat_apply_inverse(yaw_exp, rel_flat).reshape(batch, n_rays, 3)
+    sensor_coords = torch.nan_to_num(sensor_coords)
+
+    if noise:
+        sensor_coords[..., 2] += torch.randn_like(sensor_coords[..., 2]) * 0.03
+
+    # Missed rays (distances < 0) collapse to the frame origin in mjlab; mark
+    # them as deep holes so the policy sees "no ground" rather than "ground at
+    # the base link".
+    valid = data.distances >= 0  # [B, N]
+    sensor_coords[..., 2] = torch.where(
+        valid, sensor_coords[..., 2], sensor_coords.new_full((), z_min)
+    )
+    sensor_coords[..., 2] = torch.clamp(sensor_coords[..., 2], min=z_min, max=z_max)
+    return sensor_coords.reshape(batch, -1)
